@@ -265,7 +265,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(keras.layers.Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    @unittest.skip("ONNXRuntime doesn't support 3D ConvTranspose.")
+    # @unittest.skip("ONNXRuntime doesn't support 3D ConvTranspose.")
     def test_conv3d_transpose(self):
         self._conv3trans_helper(3, 5, (2, 2, 2), (1, 1, 1), (5, 5, 8))
 
@@ -322,7 +322,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
-    @unittest.skip("ONNXRuntime doesn't support 3D average pooling yet.")
+    # @unittest.skip("ONNXRuntime doesn't support 3D average pooling yet.")
     def test_pooling_avg3d(self):
         self._pooling_test_helper(keras.layers.AveragePooling3D, (4, 4, 4, 3))
 
@@ -688,15 +688,15 @@ class TestKerasTF2ONNX(unittest.TestCase):
         except FileNotFoundError:
             self.assertTrue(False, 'The image data does not exist.')
 
-    @unittest.skip(reason="conv1_bn Unrecognized attribute: spatial for operator BatchNormalization")
+    # @unittest.skip(reason="conv1_bn Unrecognized attribute: spatial for operator BatchNormalization")
     def test_MobileNet(self):
         from keras.applications import mobilenet
         model = mobilenet.MobileNet(weights='imagenet')
         self._test_keras_model(model)
 
-    @unittest.skipIf(StrictVersion(keras.__version__) < StrictVersion("2.2.3"),
-                     "There is no mobilenet_v2 module before keras 2.2.3.")
-    @unittest.skip(reason="conv1_bn Unrecognized attribute: spatial for operator BatchNormalization")
+    # @unittest.skipIf(StrictVersion(keras.__version__) < StrictVersion("2.2.3"),
+    #                  "There is no mobilenet_v2 module before keras 2.2.3.")
+    # @unittest.skip(reason="conv1_bn Unrecognized attribute: spatial for operator BatchNormalization")
     def test_MobileNetV2(self):
         from keras.applications import mobilenet_v2
         model = mobilenet_v2.MobileNetV2(weights='imagenet')
