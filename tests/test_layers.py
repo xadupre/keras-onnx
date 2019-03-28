@@ -265,7 +265,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(keras.layers.Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    # @unittest.skip("ONNXRuntime doesn't support 3D ConvTranspose.")
+    @unittest.skip("ONNXRuntime doesn't support 3D ConvTranspose.")
     def test_conv3d_transpose(self):
         self._conv3trans_helper(3, 5, (2, 2, 2), (1, 1, 1), (5, 5, 8))
 
@@ -322,7 +322,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
-    # @unittest.skip("ONNXRuntime doesn't support 3D average pooling yet.")
+    @unittest.skip("ONNXRuntime doesn't support 3D average pooling yet.")
     def test_pooling_avg3d(self):
         self._pooling_test_helper(keras.layers.AveragePooling3D, (4, 4, 4, 3))
 
