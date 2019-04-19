@@ -290,6 +290,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_conv3d_transpose(self):
         self._conv3trans_helper(3, 5, (2, 2, 2), (1, 1, 1), (5, 5, 8))
 
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("0.4.0"),
+                     "Failing for this verions of the runtime.")
     def test_flatten(self):
         model = keras.Sequential()
         model.add(keras.layers.core.Flatten(input_shape=(3, 2)))
