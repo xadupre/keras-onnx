@@ -776,6 +776,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
     @unittest.skipIf(StrictVersion(keras.__version__.split('-')[0]) < StrictVersion("2.2.3"),
                      "There is no mobilenet_v2 module before keras 2.2.3.")
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("0.4.0"),
+                     "Failing for this verions of the runtime.")
     def test_MobileNetV2(self):
         mobilenet_v2 = keras.applications.mobilenet_v2
         model = mobilenet_v2.MobileNetV2(weights='imagenet')
