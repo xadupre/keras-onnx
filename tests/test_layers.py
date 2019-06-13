@@ -11,6 +11,7 @@ import keras2onnx
 import numpy as np
 from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx
 from distutils.version import StrictVersion
+import onnxruntime
 
 
 working_path = os.path.abspath(os.path.dirname(__file__))
