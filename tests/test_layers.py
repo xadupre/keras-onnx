@@ -9,8 +9,7 @@ import onnx
 import unittest
 import keras2onnx
 import numpy as np
-import onnxruntime
-from keras2onnx.proto import keras, is_tf_keras
+from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx
 from distutils.version import StrictVersion
 
 
@@ -49,12 +48,16 @@ class TestKerasTF2ONNX(unittest.TestCase):
         if not isinstance(expected, list):
             expected = [expected]
 
-        data = data if isinstance(data, list) else [data]
-        input_names = sess.get_inputs()
-        # to avoid too complicated test code, we restrict the input name in Keras test cases must be
-        # in alphabetical order. It's always true unless there is any trick preventing that.
-        feed = zip(sorted(i_.name for i_ in input_names), data)
-        actual = sess.run(None, dict(feed))
+        if isinstance(data, dict):
+            feed_input = data
+        else:
+            data = data if isinstance(data, list) else [data]
+            input_names = sess.get_inputs()
+            # to avoid too complicated test code, we restrict the input name in Keras test cases must be
+            # in alphabetical order. It's always true unless there is any trick preventing that.
+            feed = zip(sorted(i_.name for i_ in input_names), data)
+            feed_input = dict(feed)
+        actual = sess.run(None, feed_input)
         res = all(np.allclose(expected[n_], actual[n_], rtol=rtol, atol=atol) for n_ in range(len(expected)))
         if res and temp_model_file not in self.model_files:  # still keep the failed case files for the diagnosis.
             self.model_files.append(temp_model_file)
@@ -388,7 +391,9 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_pooling_global(self):
         self._pooling_test_helper(keras.layers.GlobalAveragePooling2D, (4, 6, 2))
 
-    def activationlayer_helper(self, layer, data_for_advanced_layer=None):
+    def activationlayer_helper(self, layer, data_for_advanced_layer=None, op_version=None):
+        if op_version is None:
+            op_version = get_opset_number_from_onnx()
         if data_for_advanced_layer is None:
             data = self.asarray(-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5)
             layer = keras.layers.Activation(layer, input_shape=(data.size,))
@@ -397,7 +402,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         model = keras.Sequential()
         model.add(layer)
-        onnx_model = keras2onnx.convert_keras(model, model.name)
+        onnx_model = keras2onnx.convert_keras(model, model.name, target_opset=op_version)
 
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
@@ -449,6 +454,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
     def test_ThresholdedRelu(self):
         data = self.asarray(-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5)
+        layer = keras.layers.advanced_activations.ThresholdedReLU(theta=1.0, input_shape=(data.size,))
+        self.activationlayer_helper(layer, data, op_version=8)
         layer = keras.layers.advanced_activations.ThresholdedReLU(theta=1.0, input_shape=(data.size,))
         self.activationlayer_helper(layer, data)
 
@@ -703,6 +710,34 @@ class TestKerasTF2ONNX(unittest.TestCase):
         data = np.random.rand(input_dim, sequence_len).astype(np.float32).reshape((1, sequence_len, input_dim))
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime('tf_lstm', onnx_model, data, expected))
+
+    def test_LSTM_with_initializer(self):
+        # batch_size = N
+        # seq_length = H
+        # input_size = W
+        # hidden_size = C
+        N, H, W, C = 3, 1, 2, 5
+
+        # inputs shape: (batch_size, seq_length)
+        inputs = keras.Input(shape=(H, W), name='inputs')
+
+        # initial state shape: (hidden_size, 1)
+        state_h = keras.Input(shape=(C,), name='state_h')
+        state_c = keras.Input(shape=(C,), name='state_c')
+
+        # create keras model
+        lstm_layer = keras.layers.LSTM(units=C, activation='relu', return_sequences=True)(inputs,
+                                                                                          initial_state=[state_h,
+                                                                                                         state_c])
+        outputs = keras.layers.Dense(W, activation='sigmoid')(lstm_layer)
+        keras_model = keras.Model(inputs=[inputs, state_h, state_c], outputs=outputs)
+
+        x = np.random.rand(1, H, W).astype(np.float32)
+        sh = np.random.rand(1, C).astype(np.float32)
+        sc = np.random.rand(1, C).astype(np.float32)
+        expected = keras_model.predict([x, sh, sc])
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs_01": x, 'state_h_01': sh, 'state_c_01': sc}, expected))
 
     def test_Bidirectional(self):
         for return_sequences in [True, False]:
