@@ -18,7 +18,7 @@ SeparableConv1D = keras.layers.SeparableConv1D if \
     hasattr(keras.layers, 'SeparableConv1D') else None
 
 
-def _calc_explicit_padding(input_size, output_shape, output_padding, kernel_shape, stride, dilation, perm):
+def _calc_explicit_padding(input_size, output_shape, is_transpose, output_padding, kernel_shape, stride, dilation, perm):
     to_nchw = lambda x, perm: [x[perm[n_]] for n_ in range(len(x))]
     input_size = to_nchw(input_size, perm)[2:]
     output_shape = to_nchw(output_shape, perm)[2:]
@@ -27,8 +27,14 @@ def _calc_explicit_padding(input_size, output_shape, output_padding, kernel_shap
     total_padding = []
     pads = [None] * 2 * spatial
     for i in range(spatial):
-        total_padding[i:] = [stride[i] * (output_shape[i] - 1) +
-                             output_padding[i] + kernel_shape[i] * dilation[i] - input_size[i]]
+        # padding is calculated differently for Conv and ConvTranspose
+        if is_transpose:
+            total_padding[i:] = [stride[i] * (output_shape[i] - 1) +
+                                 output_padding[i] + kernel_shape[i] * dilation[i] - input_size[i]]
+        else:
+            total_padding[i:] = [stride[i] * ((input_size[i] - 1) // stride[i]) + 1 +
+                                 output_padding[i] + (kernel_shape[i] - 1) * dilation[i] - input_size[i]]
+        total_padding[i] = max(total_padding[i], 0)
         pads[i] = total_padding[i] // 2
         pads[i + spatial] = total_padding[i] - (total_padding[i] // 2)
 
@@ -132,10 +138,13 @@ def convert_keras_conv_core(scope, operator, container, is_transpose, n_dims, in
     attrs['kernel_shape'] = op.kernel_size
     attrs['group'] = group
 
+    input_shape = op._input_shape if hasattr(op, '_input_shape') else op.input_shape
+    output_shape = op._output_shape if hasattr(op, '_output_shape') else op.output_shape
+
     if op.padding == 'valid':
         attrs['auto_pad'] = 'VALID'
     elif op.padding == 'same':
-        if op.input_shape.count(None) > 1:
+        if input_shape.count(None) > 1:
             if is_transpose:
                 attrs['auto_pad'] = 'SAME_LOWER'  # the controversial def in onnx spec.
             else:
@@ -145,14 +154,15 @@ def convert_keras_conv_core(scope, operator, container, is_transpose, n_dims, in
             output_padding = [0] * len(op.kernel_size)
             if hasattr(op, 'output_padding') and op.output_padding is not None:
                 output_padding = op.output_padding
-            attrs['pads'] = _calc_explicit_padding(op.output_shape if is_transpose else op.input_shape,
-                                                   op.input_shape if is_transpose else op.output_shape,
+            attrs['pads'] = _calc_explicit_padding(output_shape if is_transpose else input_shape,
+                                                   input_shape if is_transpose else output_shape,
+                                                   is_transpose,
                                                    output_padding,
                                                    op.kernel_size,
                                                    op.strides,
                                                    op.dilation_rate,
                                                    list(range(
-                                                       len(op.input_shape))) if channels_first else input_perm_axes)
+                                                       len(input_shape))) if channels_first else input_perm_axes)
     else:
         raise RuntimeError("Unsupported padding type '{}'".format(op.padding))
 

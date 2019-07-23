@@ -9,6 +9,7 @@ import onnx
 import unittest
 import keras2onnx
 import numpy as np
+import onnxconverter_common
 from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx
 from distutils.version import StrictVersion
 import onnxruntime
@@ -125,9 +126,21 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime('onnx_stridedslice', onnx_model, data, expected))
 
+    def _test_stridedslice_ellipsis_mask_with_version(self, target_opset):
+        _custom_op_handlers = {
+            'StridedSlice': (keras2onnx._builtin.on_StridedSlice if target_opset > 9 else keras2onnx._builtin.on_StridedSlice_9, [])}
+        model = keras.models.Sequential()
+        model.add(keras.layers.Lambda(lambda x: x[:, :2, ..., 1:], input_shape=[3, 4, 5, 6, 3]))
+        onnx_model = keras2onnx.convert_keras(model, 'test', target_opset=target_opset, custom_op_conversions=_custom_op_handlers)
+
+        data = np.random.rand(5 * 3 * 4 * 5 * 6 * 3).astype(np.float32).reshape(5, 3, 4, 5, 6, 3)
+        expected = model.predict(data)
+        self.assertTrue(self.run_onnx_runtime('onnx_stridedslice_ellipsis_mask', onnx_model, data, expected))
+
     def test_stridedslice(self):
-        self._test_stridedslice_with_version(9)
-        self._test_stridedslice_with_version(10)
+        for opset_ in [9, 10]:
+            self._test_stridedslice_with_version(opset_)
+            self._test_stridedslice_ellipsis_mask_with_version(opset_)
 
     def test_dense(self):
         for bias_value in [True, False]:
@@ -272,6 +285,10 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
     def test_conv2d_padding_same(self):
         self._conv2_helper(3, 5, (2, 2), (1, 1), (5, 5), padding='same')
+        self._conv2_helper(8, 16, (1, 1), (2, 2), (60, 60), padding='same')
+        self._conv2_helper(1, 1, (3, 3), (2, 2), (6, 6), padding='same')
+        self._conv2_helper(1, 1, (7, 7), (2, 2), (25, 25), padding='same')
+        self._conv2_helper(1, 1, (5, 7), (3, 5), (25, 25), padding='same')
 
     @unittest.skipIf(is_tf_keras, "Generic conv implementation only supports NHWC tensor format in tf_keras")
     def test_conv2d_format(self):
@@ -321,6 +338,20 @@ class TestKerasTF2ONNX(unittest.TestCase):
         data = np.array([[[1, 2], [3, 4], [5, 6]]]).astype(np.float32)
         expected = model.predict(data)
         self.assertTrue(self.run_onnx_runtime('flatten', onnx_model, data, expected))
+
+    def test_flatten2(self):
+        C = 3
+        H = 5
+        W = 7
+        for data_format in ['channels_first', 'channels_last']:
+            model = keras.Sequential()
+            model.add(keras.layers.Conv2D(64, (3, 3),
+                             input_shape=(C, H, W), padding='same', ))
+            model.add(keras.layers.Flatten(data_format=data_format))
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            x = np.random.rand(4, C, H, W).astype(np.float32)
+            expected = model.predict(x)
+            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
 
     def test_reshape(self):
         model = keras.Sequential()
@@ -443,6 +474,20 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_selu(self):
         self.activationlayer_helper('selu')
         self.activationlayer_helper(keras.activations.selu)
+
+        if StrictVersion(onnxconverter_common.__version__) >= StrictVersion("1.5.1"):
+            SIZE = 10
+            NB_CLASS = 5
+            model = keras.models.Sequential()
+            model.add(keras.layers.Conv2D(32, strides=(2, 2), kernel_size=3, input_shape=(SIZE, SIZE, 1)))
+            model.add(keras.layers.Flatten())
+            model.add(keras.layers.Dense(32, activation='selu'))
+            model.add(keras.layers.Dense(NB_CLASS, activation='softmax'))
+            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+            data = np.random.rand(5, SIZE, SIZE, 1).astype(np.float32)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            expected = model.predict(data)
+            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
     def test_softsign(self):
         self.activationlayer_helper('softsign')
@@ -693,15 +738,15 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_LSTM(self):
         LSTM = keras.layers.LSTM
         inputs1 = keras.Input(shape=(3, 5))
+        data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
         for use_bias in [True, False]:
-            cls = LSTM(units=2, return_state=True, return_sequences=True, use_bias=use_bias)
-            lstm1, state_h, state_c = cls(inputs1)
-            model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
-            data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
-            onnx_model = keras2onnx.convert_keras(model, model.name)
-
-        expected = model.predict(data)
-        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
+            for return_sequences in [True, False]:
+                cls = LSTM(units=2, return_state=True, return_sequences=return_sequences, use_bias=use_bias)
+                lstm1, state_h, state_c = cls(inputs1)
+                model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
+                onnx_model = keras2onnx.convert_keras(model, model.name)
+                expected = model.predict(data)
+                self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
     def test_LSTM_with_bias(self):
         LSTM = keras.layers.LSTM
@@ -710,7 +755,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         lstm1, state_h, state_c = cls(inputs1)
         model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
         # Set weights: kernel, recurrent_kernel and bias
-        model.set_weights([[[1, 2, 3, 4]], [[5, 6, 7, 8]], [1, 2, 3, 4]])
+        model.set_weights((np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4])))
         data = np.random.rand(1, 1).astype(np.float32).reshape((1, 1, 1))
         onnx_model = keras2onnx.convert_keras(model, model.name)
 
@@ -758,57 +803,61 @@ class TestKerasTF2ONNX(unittest.TestCase):
         sc = np.random.rand(1, C).astype(np.float32)
         expected = keras_model.predict([x, sh, sc])
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
-        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs_01": x, 'state_h_01': sh, 'state_c_01': sc}, expected))
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs:01": x, 'state_h:01': sh, 'state_c:01': sc}, expected))
 
     @unittest.skipIf(get_opset_number_from_onnx() < 9,
                      "None seq_length LSTM is not supported before opset 9.")
     def test_LSTM_seqlen_none(self):
         lstm_dim = 2
-        inp = keras.layers.Input(batch_shape=(1, None, 1))
-        out = keras.layers.LSTM(lstm_dim, return_sequences=True, stateful=True)(inp)
-        keras_model = keras.Model(inputs=inp, outputs=out)
-
-        onnx_model = keras2onnx.convert_keras(keras_model, target_opset=10)
         data = np.random.rand(1, 5, 1).astype(np.float32)
-        expected = keras_model.predict(data)
-        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
+        for return_sequences in [True, False]:
+            inp = keras.layers.Input(batch_shape=(1, None, 1))
+            out = keras.layers.LSTM(lstm_dim, return_sequences=return_sequences, stateful=True)(inp)
+            keras_model = keras.Model(inputs=inp, outputs=out)
+
+            onnx_model = keras2onnx.convert_keras(keras_model, target_opset=10)
+            expected = keras_model.predict(data)
+            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
     def test_Bidirectional(self):
+        input_dim = 10
+        sequence_len = 5
+        op_version = get_opset_number_from_onnx()
+        batch_list = [1, 4] if op_version >= 9 else [1]
+
         for return_sequences in [True, False]:
-            input_dim = 10
-            sequence_len = 5
             model = keras.Sequential()
-            model.add(keras.layers.Bidirectional(keras.layers.LSTM(10, return_sequences=return_sequences),
+            model.add(keras.layers.Bidirectional(keras.layers.LSTM(7, return_sequences=return_sequences),
                       input_shape=(5, 10)))
             model.add(keras.layers.Dense(5))
             model.add(keras.layers.Activation('softmax'))
             model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-
-            onnx_model = keras2onnx.convert_keras(model, 'test')
-            data = np.random.rand(input_dim, sequence_len).astype(np.float32).reshape((1, sequence_len, input_dim))
-            expected = model.predict(data)
-            self.assertTrue(self.run_onnx_runtime('bidirectional', onnx_model, data, expected))
+            onnx_model = keras2onnx.convert_keras(model, 'test', target_opset=op_version)
+            for batch in batch_list:
+                data = np.random.rand(batch, sequence_len, input_dim).astype(np.float32)
+                expected = model.predict(data)
+                self.assertTrue(self.run_onnx_runtime('bidirectional', onnx_model, data, expected))
 
         for merge_mode in ['concat', None]:
-            # TODO: case return_sequences=False
-            for return_sequences in [True]:
-                input_dim = 10
-                sequence_len = 5
+            for return_sequences in [True, False]:
                 sub_input1 = keras.layers.Input(shape=(sequence_len, input_dim))
-                sub_mapped1 = keras.layers.Bidirectional(keras.layers.LSTM(10, return_sequences=return_sequences),
+                sub_mapped1 = keras.layers.Bidirectional(keras.layers.LSTM(7, return_sequences=return_sequences),
                                                      input_shape=(5, 10), merge_mode=merge_mode)(sub_input1)
                 keras_model = keras.Model(inputs=sub_input1, outputs=sub_mapped1)
-                onnx_model = keras2onnx.convert_keras(keras_model, 'test_2')
-                data = np.random.rand(input_dim, sequence_len).astype(np.float32).reshape((1, sequence_len, input_dim))
-                expected = keras_model.predict(data)
-                self.assertTrue(self.run_onnx_runtime('bidirectional', onnx_model, data, expected))
+                onnx_model = keras2onnx.convert_keras(keras_model, 'test_2', target_opset=op_version)
+                for batch in batch_list:
+                    data = np.random.rand(batch, sequence_len, input_dim).astype(np.float32)
+                    expected = keras_model.predict(data)
+                    self.assertTrue(self.run_onnx_runtime('bidirectional', onnx_model, data, expected))
 
     def test_Bidirectional_with_bias(self):
         model = keras.Sequential()
         model.add(keras.layers.Bidirectional(keras.layers.LSTM(1, return_sequences=False),
                   input_shape=(1, 1)))
         # Set weights(kernel, recurrent_kernel, bias) for forward layer followed by the backward layer
-        model.set_weights([[[1, 2, 3, 4]], [[5, 6, 7, 8]], [1, 2, 3, 4], [[1, 2, 3, 4]], [[5, 6, 7, 8]], [1, 2, 3, 4]])
+        model.set_weights(
+            (np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4]),
+             np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4])))
         onnx_model = keras2onnx.convert_keras(model, 'test')
         data = np.random.rand(1, 1).astype(np.float32).reshape((1, 1, 1))
         expected = model.predict(data)
@@ -824,9 +873,10 @@ class TestKerasTF2ONNX(unittest.TestCase):
         model.add(keras.layers.Dense(44))
 
         onnx_model = keras2onnx.convert_keras(model, model.name)
-        x = np.random.rand(1, 50).astype(np.float32)
-        expected = model.predict(x)
-        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
+        for batch in [1, 4]:
+            x = np.random.rand(batch, 50).astype(np.float32)
+            expected = model.predict(x)
+            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
 
     def test_seq_dynamic_batch_size(self):
         data_dim = 4  # input_size
@@ -1005,7 +1055,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         preprocess_input = keras.applications.resnet50.preprocess_input
         image = keras.preprocessing.image
 
-        img_path = os.path.join(os.path.dirname(__file__), 'data', 'elephant.jpg')
+        img_path = os.path.join(os.path.dirname(__file__), 'data', 'street.jpg')
         try:
             img = image.load_img(img_path, target_size=(img_size, img_size))
             x = image.img_to_array(img)
