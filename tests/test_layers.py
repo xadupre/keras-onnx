@@ -731,7 +731,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
             data = np.array([0.1, 0.2, 0.3]).astype(np.float32).reshape((1, 3, 1))
             init_state = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 2))
-            init_state_onnx = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 1, 2))
+            init_state_onnx = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 2))
             expected = model.predict([data, init_state])
             self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected))
 
@@ -803,7 +803,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         sc = np.random.rand(1, C).astype(np.float32)
         expected = keras_model.predict([x, sh, sc])
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
-        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs:01": x, 'state_h:01': sh, 'state_c:01': sc}, expected))
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs": x, 'state_h': sh, 'state_c': sc}, expected))
 
     @unittest.skipIf(get_opset_number_from_onnx() < 9,
                      "None seq_length LSTM is not supported before opset 9.")
@@ -1042,7 +1042,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         model.add(keras.layers.MaxPooling2D((2, 2), strides=(2, 2), data_format='channels_last'))
 
         model.compile(optimizer='sgd', loss='mse')
-        onnx_model = keras2onnx.convert_keras(model, channel_first_inputs=[model.inputs[0].name])
+        onnx_model = keras2onnx.convert_keras(model, channel_first_inputs=[model.input_names[0]])
 
         expected = model.predict(x)
         self.assertIsNotNone(expected)
