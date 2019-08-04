@@ -142,6 +142,16 @@ class TestKerasTF2ONNX(unittest.TestCase):
             self._test_stridedslice_with_version(opset_)
             self._test_stridedslice_ellipsis_mask_with_version(opset_)
 
+    def test_any_all(self):
+        for l_ in [keras.backend.any, keras.backend.all]:
+            for axis in [1, -1]:
+                keras_model = keras.models.Sequential()
+                keras_model.add(keras.layers.Lambda(lambda x: l_(x, axis=axis), input_shape=[3, 5]))
+                onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
+                x = np.random.rand(2, 3, 5).astype(np.float32)
+                expected = keras_model.predict(x)
+                self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
+
     def test_dense(self):
         for bias_value in [True, False]:
             model = keras.Sequential()
@@ -602,6 +612,32 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_dot(self):
         self._dot_helper(False, self.asarray(1, 2, 3), self.asarray(4, 5, 6))
         self._dot_helper(True, self.asarray(1, 2, 3), self.asarray(4, 5, 6))
+
+    def test_dot2(self):
+        input_1_shapes = [[32, 20, 1], [2, 3, 5], [2, 3, 5], [4, 3, 5], [2, 7], [2, 3, 4, 12, 3], [1, 3]]
+        input_2_shapes = [[32, 30, 20], [2, 3, 5], [2, 3, 5], [4, 5], [2, 7, 5], [2, 3, 4, 15, 3], [1, 3]]
+        axes_list = [[1, 2], 1, 2, [2, 1], [1, 1], 4, 1]
+        for i_ in range(len(input_1_shapes)):
+            for normalize in [True, False]:
+                drop2_embed_title = keras.layers.Input(batch_shape=tuple(input_1_shapes[i_]), name='input1')
+                att_weight = keras.layers.Input(batch_shape=tuple(input_2_shapes[i_]), name='input2')
+                doc_vec1 = keras.layers.dot([drop2_embed_title, att_weight], axes=axes_list[i_], normalize=normalize)
+                model = keras.models.Model(inputs=[drop2_embed_title, att_weight], outputs=doc_vec1)
+                data1 = np.random.rand(*input_1_shapes[i_]).astype(np.float32)
+                data2 = np.random.rand(*input_2_shapes[i_]).astype(np.float32)
+                expected = model.predict([data1, data2])
+                onnx_model = keras2onnx.convert_keras(model, model.name)
+                self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, [data1, data2], expected))
+
+        drop2_embed_title = keras.layers.Input(batch_shape=(None, 7), name='input1')
+        att_weight = keras.layers.Input(batch_shape=(None, 7, 5), name='input2')
+        doc_vec1 = keras.layers.dot([drop2_embed_title, att_weight], axes=[1, 1])
+        model = keras.models.Model(inputs=[drop2_embed_title, att_weight], outputs=doc_vec1)
+        data1 = np.random.rand(2, 7).astype(np.float32)
+        data2 = np.random.rand(2, 7, 5).astype(np.float32)
+        expected = model.predict([data1, data2])
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, [data1, data2], expected))
 
     def _batch_norm_helper(self, data, gamma, beta, scale, center, axis):
         model = keras.Sequential()
