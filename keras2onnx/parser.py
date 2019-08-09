@@ -9,7 +9,7 @@ from six.moves import queue
 from collections.abc import Iterable
 from .proto import keras
 from .common import k2o_logger, get_default_batch_size
-from .ke2onnx import extract_inbound_nodes, list_input_tensors, list_output_tensors, build_opdict_from_keras
+from .ke2onnx import extract_inbound_nodes, list_input_tensors, list_output_tensors, list_input_shapes, list_output_shapes, build_opdict_from_keras
 from .common.data_types import Int32TensorType, Int64TensorType, FloatTensorType, DoubleTensorType, BooleanTensorType
 from .topology import Topology
 from .subgraph import is_placeholder_node, tsname_to_node, create_subgraph
@@ -105,9 +105,9 @@ def _convert_keras_timedistributed(graph, node_list, layer, model, varset):
     for nb_ in extract_inbound_nodes(layer):
         if _is_relevant_keras_node(model, nb_):
             inputs += list_input_tensors(nb_)
-            ishapes += nb_.input_shapes if isinstance(nb_.input_shapes[0], Iterable) else [nb_.input_shapes]
+            ishapes += list_input_shapes(nb_)
             outputs += list_output_tensors(nb_)
-            oshapes += nb_.output_shapes if isinstance(nb_.output_shapes[0], Iterable) else [nb_.output_shapes]
+            oshapes += list_output_shapes(nb_)
             num_relevant_keras_node = num_relevant_keras_node + 1
 
     assert num_relevant_keras_node == 1
@@ -167,20 +167,16 @@ def _adjust_input_batch_size(var_type):
     return var_type
 
 
-def _convert_keras_scope(graph, node_list, layer, model, varset, prefix=None):
+def _convert_keras_scope(graph, node_list, layer, kenode, model, varset, prefix=None):
     operator = varset.declare_local_operator(type(layer), raw_model=layer, op_name=layer.name)
     operator.nodelist = node_list
 
-    inputs = []
-    outputs = []
-    oshapes = []
-    for nb_ in extract_inbound_nodes(layer):
-        if _is_relevant_keras_node(model, nb_):
-            inputs += list_input_tensors(nb_)
-            outputs += list_output_tensors(nb_)
-            oshapes += nb_.output_shapes if isinstance(nb_.output_shapes[0], Iterable) else [nb_.output_shapes]
-            # This layer will be visited because its output is other layer's input
-            assert len(node_list) == 0 or node_list[0] in [ts_.op for ts_ in outputs]
+    inputs = list_input_tensors(kenode)
+    outputs = list_output_tensors(kenode)
+    oshapes = list_output_shapes(kenode)
+
+    # This layer will be visited because its output is other layer's input
+    assert len(node_list) == 0 or node_list[0] in [ts_.op for ts_ in outputs]
 
     if prefix is None:  # prefix is designed for the distinguish among the shared model instances.
         prefix = ''
@@ -261,17 +257,26 @@ def _convert_keras_sub_model(sub_model, graph, target_kenode, varset, top_kenode
     prefix = ''
     # mapping input/output nodes for the sub_model.
     inbound_nodes = extract_inbound_nodes(sub_model)
+    name_set = []
+    sub_model_node_idx = 0
+    for nodes_ in sub_model._nodes_by_depth.values():
+        for n_ in nodes_:
+            for ts_ in n_.output_tensors:
+                name_set.append(ts_.name)
+
     if len(inbound_nodes) > 1 and inbound_nodes[0] is not target_kenode:
         # Assumption: the first node in the inbound node list is always the one used in the keras layers.
         base_node = inbound_nodes[0]
         curr_node = target_kenode
         assert curr_node is not None
         for idx_, out_ in enumerate(list_output_tensors(curr_node)):
-            base_ts = list_output_tensors(base_node)[idx_]
-            if not prefix:
-                prefix = out_.name[0:out_.name.find(base_ts.name)]
-            else:
-                assert prefix == out_.name[0:out_.name.find(base_ts.name)]
+            max_loc = 0
+            for i_, ts_name in enumerate(name_set):
+                loc = out_.name.find(ts_name)
+                if loc != -1 and loc > max_loc:
+                    max_loc = loc
+                    sub_model_node_idx = i_
+            prefix = out_.name[0:max_loc]
             ts_outputs.append(out_)
         if top_kenode is None:
             top_kenode = curr_node
@@ -282,7 +287,8 @@ def _convert_keras_sub_model(sub_model, graph, target_kenode, varset, top_kenode
             ts_inputs.append(in_)
 
     k2o_logger().debug("prefix : %s" % prefix)
-    for nodes_ in sub_model._nodes_by_depth.values():
+    for i_ in range(sub_model_node_idx, len(sub_model._nodes_by_depth)):
+        nodes_ = sub_model._nodes_by_depth[i_]
         for n_ in nodes_:
             layer = n_.outbound_layer
             if isinstance(layer, keras.layers.InputLayer):
@@ -291,7 +297,7 @@ def _convert_keras_sub_model(sub_model, graph, target_kenode, varset, top_kenode
                 k2o_logger().debug("Processing a keras sub model - %s" % layer.name)
                 _convert_keras_sub_model(layer, graph, n_, varset, top_kenode, upper_prefix + prefix)
             else:
-                _convert_keras_scope(graph, [], layer, sub_model, varset, upper_prefix+prefix)
+                _convert_keras_scope(graph, [], layer, n_, sub_model, varset, upper_prefix+prefix)
 
     k2o_logger().debug("end prefix - %s" % prefix)
     return ts_inputs, ts_outputs
@@ -602,7 +608,8 @@ def _parse_graph_scope(graph, keras_node_dict, topology, top_scope, output_names
         elif layer_key_ is None or get_converter(type(layer_key_)) is None:
             _convert_general_scope(nodes, varset)
         else:
-            _convert_keras_scope(graph, nodes, layer_key_, model_, varset)
+            kenode = _find_kenode_by_output_tensor(extract_inbound_nodes(layer_key_), nodes[0].name)
+            _convert_keras_scope(graph, nodes, layer_key_, kenode, model_, varset)
 
     for nd_ in input_nodes:
         var_ts = nd_.outputs[0]  # since it's placeholder node, safely claim there is only one output.

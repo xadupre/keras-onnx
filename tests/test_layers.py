@@ -9,10 +9,7 @@ import onnx
 import unittest
 import keras2onnx
 import numpy as np
-import onnxconverter_common
-from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx
-from distutils.version import StrictVersion
-import onnxruntime
+from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx, is_keras_older_than
 
 
 working_path = os.path.abspath(os.path.dirname(__file__))
@@ -23,7 +20,6 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
     def setUp(self):
         self.model_files = []
-        self.keras_version = keras.__version__.split('-')[0]
 
     def tearDown(self):
         for fl in self.model_files:
@@ -484,20 +480,18 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_selu(self):
         self.activationlayer_helper('selu')
         self.activationlayer_helper(keras.activations.selu)
-
-        if StrictVersion(onnxconverter_common.__version__) >= StrictVersion("1.5.1"):
-            SIZE = 10
-            NB_CLASS = 5
-            model = keras.models.Sequential()
-            model.add(keras.layers.Conv2D(32, strides=(2, 2), kernel_size=3, input_shape=(SIZE, SIZE, 1)))
-            model.add(keras.layers.Flatten())
-            model.add(keras.layers.Dense(32, activation='selu'))
-            model.add(keras.layers.Dense(NB_CLASS, activation='softmax'))
-            model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-            data = np.random.rand(5, SIZE, SIZE, 1).astype(np.float32)
-            onnx_model = keras2onnx.convert_keras(model, model.name)
-            expected = model.predict(data)
-            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
+        SIZE = 10
+        NB_CLASS = 5
+        model = keras.models.Sequential()
+        model.add(keras.layers.Conv2D(32, strides=(2, 2), kernel_size=3, input_shape=(SIZE, SIZE, 1)))
+        model.add(keras.layers.Flatten())
+        model.add(keras.layers.Dense(32, activation='selu'))
+        model.add(keras.layers.Dense(NB_CLASS, activation='softmax'))
+        model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        data = np.random.rand(5, SIZE, SIZE, 1).astype(np.float32)
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        expected = model.predict(data)
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected))
 
     def test_softsign(self):
         self.activationlayer_helper('softsign')
@@ -575,7 +569,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         for size in [2, (2, 3)]:
             layer = keras.layers.UpSampling2D(size=size, data_format='channels_last')
             self._misc_conv_helper(layer, ishape)
-            if StrictVersion(self.keras_version) >= StrictVersion("2.2.3"):
+            if not is_keras_older_than("2.2.3"):
                 layer = keras.layers.UpSampling2D(size=size, data_format='channels_last', interpolation='bilinear')
                 self._misc_conv_helper(layer, ishape)
         ishape = (20, 20, 20, 1)
@@ -969,8 +963,33 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(x)
         self.assertTrue(self.run_onnx_runtime('separable_convolution_2', onnx_model, x, expected))
 
-    @unittest.skipIf(is_tf_keras, "tf_keras not supported")
+    def test_shared_embed(self):
+        max_cont_length = 5
+        max_ques_length = 7
+        word_dict_len = 10
+        word_dim = 6
+        h_word_mat = 'aa'
+        # Input Embedding Layer
+        contw_input_ = keras.layers.Input((max_cont_length,))  # [bs, c_len]
+        quesw_input_ = keras.layers.Input((max_ques_length,))  # [bs, q_len]
+
+        # embedding word
+        WordEmbedding = keras.layers.Embedding(word_dict_len, word_dim, trainable=False,
+                                  name="word_embedding_" + h_word_mat)
+        xw_cont = keras.layers.Dropout(0.)(WordEmbedding(contw_input_))  # [bs, c_len, word_dim]
+        xw_ques = keras.layers.Dropout(0.)(WordEmbedding(quesw_input_))  # [bs, c_len, word_dim]
+
+        keras_model = keras.models.Model(inputs=[contw_input_, quesw_input_],
+                      outputs=[xw_cont, xw_ques])
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
+        batch_size = 3
+        x = np.random.rand(batch_size, max_cont_length).astype(np.float32)
+        y = np.random.rand(batch_size, max_ques_length).astype(np.float32)
+        expected = keras_model.predict([x, y])
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, [x, y], expected))
+
     def test_recursive_model(self):
+        keras.backend.set_learning_phase(0)
         Input = keras.layers.Input
         Dense = keras.layers.Dense
         Add = keras.layers.Add
@@ -998,8 +1017,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = keras_model.predict(x)
         self.assertTrue(self.run_onnx_runtime('recursive', onnx_model, x, expected))
 
-    @unittest.skipIf(is_tf_keras, "tf_keras not supported")
     def test_recursive_and_shared_model(self):
+        keras.backend.set_learning_phase(0)
         Input = keras.layers.Input
         Dense = keras.layers.Dense
         Add = keras.layers.Add
@@ -1032,6 +1051,40 @@ class TestKerasTF2ONNX(unittest.TestCase):
         x = [x, 2 * x]
         expected = keras_model.predict(x)
         self.assertTrue(self.run_onnx_runtime('recursive_and_shared', onnx_model, x, expected))
+
+    @unittest.skipIf(is_keras_older_than("2.2.4") or is_tf_keras,
+                     "Low keras version is not supported.")
+    def test_shared_model_2(self):
+        KM = keras.models
+        KL = keras.layers
+        K = keras.backend
+        K.set_learning_phase(0)
+
+        def _conv_layer(input, filters, kernel_size, strides=1, dilation_rate=1):
+            padding = 'same' if strides == 1 else 'valid'
+            if strides > 1:
+                input = KL.ZeroPadding2D(((0, 1), (0, 1)), data_format=K.image_data_format())(input)
+            x = KL.Conv2D(filters=filters, kernel_size=kernel_size, strides=strides,
+                          padding=padding, use_bias=False, dilation_rate=dilation_rate)(input)
+            ch_axis = 1 if K.image_data_format() == 'channels_first' else -1
+            x = KL.BatchNormalization(axis=ch_axis)(x)
+            return KL.ReLU()(x)
+
+        def _model():
+            input = KL.Input(shape=(3, 320, 320), name='input_1')
+            x = _conv_layer(input, 16, 3)
+            return KM.Model(inputs=input, outputs=x, name='backbone')
+
+        input = KL.Input(shape=(3, 320, 320), name='input')
+        backbone = _model()
+        x = backbone(input)
+        x = _conv_layer(x, 16, 3)
+        model = KM.Model(inputs=[input], outputs=[x])
+
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        x = np.random.rand(2, 3, 320, 320).astype(np.float32)
+        expected = model.predict(x)
+        self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
 
     def test_timedistributed(self):
         keras_model = keras.Sequential()
@@ -1104,13 +1157,77 @@ class TestKerasTF2ONNX(unittest.TestCase):
         except FileNotFoundError:
             self.assertTrue(False, 'The image data does not exist.')
 
-    @unittest.skip(reason="conv1_bn Unrecognized attribute: spatial for operator BatchNormalization")
+    def test_sub_model(self):
+        K = keras.backend
+        Input = keras.layers.Input
+        Dropout = keras.layers.Dropout
+        Layer = keras.layers.Layer
+        Conv2D = keras.layers.Conv2D
+        MaxPooling2D = keras.layers.MaxPooling2D
+        Dense = keras.layers.Dense
+        Concatenate = keras.layers.Concatenate
+        Model = keras.models.Model
+        Sequential = keras.models.Sequential
+
+        class IdentityLayer(Layer):
+            def __init__(self, **kwargs):
+                super(IdentityLayer, self).__init__(**kwargs)
+
+            def build(self, input_shape):
+                super(IdentityLayer, self).build(input_shape)
+
+            def call(self, inputs, training=None):
+                return inputs
+
+            def compute_output_shape(self, input_shape):
+                return input_shape
+
+        input_shape = [700, 420, 1]
+        num_classes = 10
+
+        for learning in [True, False]:
+            if learning:
+                K.set_learning_phase(0)
+
+            image_input = Input(shape=input_shape, name='image_input')
+
+            model = Sequential()  # 28, 28, 1
+            model.add(Conv2D(32, kernel_size=(3, 3), activation='relu',
+                             input_shape=input_shape, padding='valid'))  # 28, 28, 1
+            model.add(Conv2D(64, (3, 3), activation='relu', padding='valid'))  # 28, 28, 1
+            model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), padding="valid"))  # 14, 14, 1
+            model.add(Dropout(0.25))
+            model.add(Conv2D(128, kernel_size=(12, 12), strides=(14, 14), padding="valid", activation='relu'))
+            model.add(Dropout(0.5))
+
+            features = model(image_input)
+
+            outputs = []
+            for _ in range(3):
+                output1 = Dense(num_classes, activation="softmax")(
+                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+                output2 = Dense(1, activation="sigmoid")(
+                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+                output3 = Dense(2, activation="tanh")(
+                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+                output4 = Dense(2, activation="tanh")(
+                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+                outputs += [output1, output2, output3, output4]
+
+            output = Concatenate(name="output")(outputs)
+            output = IdentityLayer()(output)
+            model = Model(image_input, output)
+            onnx_model = keras2onnx.convert_keras(model, model.name, target_opset=7, debug_mode=True)
+            x = np.random.rand(2, 700, 420, 1).astype(np.float32)
+            expected = model.predict(x)
+            self.assertTrue(self.run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected))
+
     def test_MobileNet(self):
         mobilenet = keras.applications.mobilenet
         model = mobilenet.MobileNet(weights='imagenet')
         self._test_keras_model(model)
 
-    @unittest.skipIf(StrictVersion(keras.__version__.split('-')[0]) < StrictVersion("2.2.3"),
+    @unittest.skipIf(is_keras_older_than("2.2.3"),
                      "There is no mobilenet_v2 module before keras 2.2.3.")
     @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("0.4.0"),
                      "Failing for this verions of the runtime.")
