@@ -4,14 +4,15 @@
 # license information.
 ###############################################################################
 import os
-import sys
-import onnx
 import unittest
 import tensorflow as tf
 import keras2onnx
 import numpy as np
 from keras2onnx.proto import keras, is_tf_keras, get_opset_number_from_onnx, is_keras_older_than, is_keras_later_than
 from test_utils import run_onnx_runtime
+
+import importlib
+importlib.import_module('test_utils')
 
 K = keras.backend
 Activation = keras.layers.Activation
@@ -29,7 +30,9 @@ Conv2D = keras.layers.Conv2D
 Conv2DTranspose = keras.layers.Conv2DTranspose
 Conv3D = keras.layers.Conv3D
 Conv3DTranspose = keras.layers.Conv3DTranspose
+Cropping1D = keras.layers.Cropping1D
 Cropping2D = keras.layers.Cropping2D
+Cropping3D = keras.layers.Cropping3D
 Dense = keras.layers.Dense
 Dot = keras.layers.Dot
 dot = keras.layers.dot
@@ -63,6 +66,7 @@ ZeroPadding2D = keras.layers.ZeroPadding2D
 if not (is_keras_older_than("2.2.4") or is_tf_keras):
     ReLU = keras.layers.ReLU
 
+
 class TestKerasTF2ONNX(unittest.TestCase):
 
     def setUp(self):
@@ -94,7 +98,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         model.compile(optimizer='sgd', loss='mse')
 
         _custom_op_handlers = {
-            'Round': (keras2onnx._builtin.on_Round, [])}
+            'Round': keras2onnx.main.tf2onnx_builtin_conversion(10)['Round']}
         onnx_model = keras2onnx.convert_keras(model, 'test', custom_op_conversions=_custom_op_handlers)
         data = np.random.rand(3 * 5).astype(np.float32).reshape(1, 3, 5)
         expected = model.predict(data)
@@ -104,7 +108,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         for v1 in [-1, 1]:
             for v2 in [-1, 2]:
                 model = Sequential()
-                model.add(Lambda(lambda x: x[:, tf.newaxis, v1:, tf.newaxis, :v2, tf.newaxis, 3], input_shape=[2, 3, 4, 5]))
+                model.add(
+                    Lambda(lambda x: x[:, tf.newaxis, v1:, tf.newaxis, :v2, tf.newaxis, 3], input_shape=[2, 3, 4, 5]))
                 onnx_model = keras2onnx.convert_keras(model, 'test', target_opset=target_opset)
 
                 data = np.random.rand(6 * 2 * 3 * 4 * 5).astype(np.float32).reshape(6, 2, 3, 4, 5)
@@ -118,7 +123,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         data = np.random.rand(5 * 3 * 4 * 5 * 6 * 3).astype(np.float32).reshape(5, 3, 4, 5, 6, 3)
         expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime('onnx_stridedslice_ellipsis_mask', onnx_model, data, expected, self.model_files))
+        self.assertTrue(
+            run_onnx_runtime('onnx_stridedslice_ellipsis_mask', onnx_model, data, expected, self.model_files))
 
     def _test_stridedslice_shrink_mask_with_version(self, target_opset):
         for shrink_value in [-1, 2]:
@@ -247,7 +253,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         onnx_model = keras2onnx.convert_keras(model, model.name)
 
         expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files, rtol=rtol, atol=atol))
+        self.assertTrue(
+            run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files, rtol=rtol, atol=atol))
 
     def _conv1_helper(self, input_channels, output_channels, kernel_size, strides, input_length, activation=None,
                       rtol=1e-4, atol=1e-6, bias=False, padding='valid'):
@@ -425,7 +432,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         # test padding='same'
         model = Sequential()
-        model.add(MaxPooling2D((2, 2), strides=(2, 2), padding='same', input_shape=(H, W, C), data_format='channels_last'))
+        model.add(
+            MaxPooling2D((2, 2), strides=(2, 2), padding='same', input_shape=(H, W, C), data_format='channels_last'))
         model.compile(optimizer='sgd', loss='mse')
         onnx_model = keras2onnx.convert_keras(model, model.name)
         expected = model.predict(x)
@@ -549,11 +557,13 @@ class TestKerasTF2ONNX(unittest.TestCase):
             onnx_model = keras2onnx.convert_keras(model, model.name)
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
-    def _misc_conv_helper(self, layer, ishape):
+    def _misc_conv_helper(self, layer, ishape, target_opset=None):
+        if target_opset is None:
+            target_opset = get_opset_number_from_onnx()
         input = keras.Input(ishape)
         out = layer(input)
         model = keras.models.Model(input, out)
-        onnx_model = keras2onnx.convert_keras(model, model.name)
+        onnx_model = keras2onnx.convert_keras(model, model.name, target_opset=target_opset)
 
         data = np.random.uniform(0, 1, size=(1,) + ishape).astype(np.float32)
 
@@ -561,9 +571,27 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
 
     def test_crop(self):
+        # It also passes the test for opset 9, we skip here because it uses a legacy experimental op DynamicSlice.
+        for opset_ in [10]:
+            ishape = (10, 20)
+            for crop_v in [2, (1, 2)]:
+                layer = Cropping1D(cropping=crop_v)
+                self._misc_conv_helper(layer, ishape, opset_)
+
+            for data_format_ in ['channels_last', 'channels_first']:
+                ishape = (20, 20, 1)
+                for crop_v in [2, (2, 2), ((1, 2), (2, 3))]:
+                    layer = Cropping2D(cropping=crop_v, data_format=data_format_)
+                    self._misc_conv_helper(layer, ishape, opset_)
+                ishape = (20, 20, 20, 1)
+                for crop_v in [2, (2, 3, 4), ((1, 2), (2, 3), (3, 5))]:
+                    layer = Cropping3D(cropping=crop_v, data_format=data_format_)
+                    self._misc_conv_helper(layer, ishape, opset_)
+
+        # TODO handle other cases for opset 8
         ishape = (20, 20, 1)
         layer = Cropping2D(cropping=((1, 2), (2, 3)), data_format='channels_last')
-        self._misc_conv_helper(layer, ishape)
+        self._misc_conv_helper(layer, ishape, opset_)
 
     def test_upsample(self):
         if is_keras_later_than('2.1.6'):
@@ -630,7 +658,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
                 data2 = np.random.rand(*input_2_shapes[i_]).astype(np.float32)
                 expected = model.predict([data1, data2])
                 onnx_model = keras2onnx.convert_keras(model, model.name)
-                self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, [data1, data2], expected, self.model_files))
+                self.assertTrue(
+                    run_onnx_runtime(onnx_model.graph.name, onnx_model, [data1, data2], expected, self.model_files))
 
         drop2_embed_title = Input(batch_shape=(None, 7), name='input1')
         att_weight = Input(batch_shape=(None, 7, 5), name='input2')
@@ -687,7 +716,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             data = np.random.randn(batch_size, input_dim_1).astype(np.float32)
             onnx_model = keras2onnx.convert_keras(model)
             expected = model.predict(data)
-            self.assertTrue(run_onnx_runtime('test_batch_normalization_2_2d', onnx_model, [data], expected, self.model_files))
+            self.assertTrue(
+                run_onnx_runtime('test_batch_normalization_2_2d', onnx_model, [data], expected, self.model_files))
 
             model = Sequential()
             model.add(InputLayer(input_shape=(input_dim_1, input_dim_2)))
@@ -696,7 +726,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             data = np.random.randn(batch_size, input_dim_1, input_dim_2).astype(np.float32)
             onnx_model = keras2onnx.convert_keras(model)
             expected = model.predict(data)
-            self.assertTrue(run_onnx_runtime('test_batch_normalization_2_3d', onnx_model, [data], expected, self.model_files))
+            self.assertTrue(
+                run_onnx_runtime('test_batch_normalization_2_3d', onnx_model, [data], expected, self.model_files))
 
             model = Sequential()
             model.add(InputLayer(input_shape=(input_dim_1, input_dim_2, input_dim_3)))
@@ -705,7 +736,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             data = np.random.randn(batch_size, input_dim_1, input_dim_2, input_dim_3).astype(np.float32)
             onnx_model = keras2onnx.convert_keras(model)
             expected = model.predict(data)
-            self.assertTrue(run_onnx_runtime('test_batch_normalization_2_4d', onnx_model, [data], expected, self.model_files))
+            self.assertTrue(
+                run_onnx_runtime('test_batch_normalization_2_4d', onnx_model, [data], expected, self.model_files))
 
     def test_simpleRNN(self):
         inputs1 = keras.Input(shape=(3, 1))
@@ -735,8 +767,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         # with initial state and output state
         input = keras.Input(shape=(1, 2))
         state_in = keras.Input(shape=(10,))
-        hidden_1, state_out = SimpleRNN(10, activation='relu', return_sequences=True, return_state=True)(input,
-                                  initial_state=[state_in])
+        hidden_1, state_out = SimpleRNN(10, activation='relu', return_sequences=True,
+                                        return_state=True)(input, initial_state=[state_in])
         output = Dense(2, activation='linear')(hidden_1)
         keras_model = keras.Model(inputs=[input, state_in], outputs=[output, state_out])
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
@@ -762,7 +794,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         # GRU with initial state
         for return_sequences in [True, False]:
             cls = GRU(2, return_state=False, return_sequences=return_sequences)
-            initial_state_input = keras.Input(shape=(2, ))
+            initial_state_input = keras.Input(shape=(2,))
             oname = cls(inputs1, initial_state=initial_state_input)
             model = keras.Model(inputs=[inputs1, initial_state_input], outputs=[oname])
             onnx_model = keras2onnx.convert_keras(model, model.name)
@@ -771,7 +803,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             init_state = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 2))
             init_state_onnx = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 2))
             expected = model.predict([data, init_state])
-            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected, self.model_files))
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected,
+                                             self.model_files))
 
     def test_LSTM(self):
         inputs1 = keras.Input(shape=(3, 5))
@@ -829,8 +862,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         # create keras model
         lstm_layer = LSTM(units=C, activation='relu', return_sequences=True)(inputs,
-                                                                                          initial_state=[state_h,
-                                                                                                         state_c])
+                                                                             initial_state=[state_h,
+                                                                                            state_c])
         outputs = Dense(W, activation='sigmoid')(lstm_layer)
         keras_model = keras.Model(inputs=[inputs, state_h, state_c], outputs=outputs)
 
@@ -839,7 +872,9 @@ class TestKerasTF2ONNX(unittest.TestCase):
         sc = np.random.rand(1, C).astype(np.float32)
         expected = keras_model.predict([x, sh, sc])
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
-        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs": x, 'state_h': sh, 'state_c': sc}, expected, self.model_files))
+        self.assertTrue(
+            run_onnx_runtime(onnx_model.graph.name, onnx_model, {"inputs": x, 'state_h': sh, 'state_c': sc}, expected,
+                             self.model_files))
 
     @unittest.skipIf(get_opset_number_from_onnx() < 9,
                      "None seq_length LSTM is not supported before opset 9.")
@@ -864,7 +899,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         for return_sequences in [True, False]:
             model = keras.Sequential()
             model.add(Bidirectional(LSTM(7, return_sequences=return_sequences),
-                      input_shape=(5, 10)))
+                                    input_shape=(5, 10)))
             model.add(Dense(5))
             model.add(Activation('softmax'))
             model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
@@ -878,7 +913,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             for return_sequences in [True, False]:
                 sub_input1 = Input(shape=(sequence_len, input_dim))
                 sub_mapped1 = Bidirectional(LSTM(7, return_sequences=return_sequences),
-                                                     input_shape=(5, 10), merge_mode=merge_mode)(sub_input1)
+                                            input_shape=(5, 10), merge_mode=merge_mode)(sub_input1)
                 keras_model = keras.Model(inputs=sub_input1, outputs=sub_mapped1)
                 onnx_model = keras2onnx.convert_keras(keras_model, 'test_2', target_opset=op_version)
                 for batch in batch_list:
@@ -889,7 +924,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_Bidirectional_with_bias(self):
         model = keras.Sequential()
         model.add(Bidirectional(LSTM(1, return_sequences=False),
-                  input_shape=(1, 1)))
+                                input_shape=(1, 1)))
         # Set weights(kernel, recurrent_kernel, bias) for forward layer followed by the backward layer
         model.set_weights(
             (np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4]),
@@ -936,7 +971,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
                 else:
                     if i < len(num_neur) - 1:
                         model.add(
-                            nodeFunc(num_neur[i], input_shape=(timesteps, data_dim), return_sequences=True, unroll=True))
+                            nodeFunc(num_neur[i], input_shape=(timesteps, data_dim), return_sequences=True,
+                                     unroll=True))
                     else:
                         model.add(nodeFunc(num_neur[i], input_shape=(timesteps, data_dim), unroll=True))
 
@@ -946,14 +982,16 @@ class TestKerasTF2ONNX(unittest.TestCase):
             test_input = np.random.random_sample((5, timesteps, data_dim)).astype(np.float32)
             test_output = model.predict(test_input)
             onnx_model = keras2onnx.convert_keras(model, model.name)
-            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, test_input, test_output, self.model_files))
+            self.assertTrue(
+                run_onnx_runtime(onnx_model.graph.name, onnx_model, test_input, test_output, self.model_files))
 
     def test_separable_convolution(self):
         N, C, H, W = 2, 3, 5, 5
         x = np.random.rand(N, H, W, C).astype(np.float32, copy=False)
         model = Sequential()
-        model.add(SeparableConv2D(filters=10, kernel_size=(1, 2), strides=(1, 1), padding='valid', input_shape=(H, W, C),
-                         data_format='channels_last', depth_multiplier=4))
+        model.add(
+            SeparableConv2D(filters=10, kernel_size=(1, 2), strides=(1, 1), padding='valid', input_shape=(H, W, C),
+                            data_format='channels_last', depth_multiplier=4))
         model.add(MaxPooling2D((2, 2), strides=(2, 2), data_format='channels_last'))
         model.compile(optimizer='sgd', loss='mse')
         onnx_model = keras2onnx.convert_keras(model, 'test')
@@ -963,7 +1001,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         x = np.random.rand(N, H, C).astype(np.float32, copy=False)
         model = Sequential()
         model.add(SeparableConv1D(filters=10, kernel_size=2, strides=1, padding='valid', input_shape=(H, C),
-                         data_format='channels_last'))
+                                  data_format='channels_last'))
         model.compile(optimizer='sgd', loss='mse')
         onnx_model = keras2onnx.convert_keras(model, 'test')
         expected = model.predict(x)
@@ -986,7 +1024,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         xw_ques = Dropout(0.)(WordEmbedding(quesw_input_))  # [bs, c_len, word_dim]
 
         keras_model = keras.models.Model(inputs=[contw_input_, quesw_input_],
-                      outputs=[xw_cont, xw_ques])
+                                         outputs=[xw_cont, xw_ques])
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
         batch_size = 3
         x = np.random.rand(batch_size, max_cont_length).astype(np.float32)
@@ -1061,7 +1099,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             if strides > 1:
                 input = ZeroPadding2D(((0, 1), (0, 1)), data_format=K.image_data_format())(input)
             x = Conv2D(filters=filters, kernel_size=kernel_size, strides=strides,
-                          padding=padding, use_bias=False, dilation_rate=dilation_rate)(input)
+                       padding=padding, use_bias=False, dilation_rate=dilation_rate)(input)
             ch_axis = 1 if K.image_data_format() == 'channels_first' else -1
             x = BatchNormalization(axis=ch_axis)(x)
             return ReLU()(x)
@@ -1094,7 +1132,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         keras_model = keras.Sequential()
         N, D, W, H, C = 5, 10, 15, 15, 3
         keras_model.add(TimeDistributed(Conv2D(64, (3, 3)),
-                        input_shape=(D, W, H, C)))
+                                        input_shape=(D, W, H, C)))
         onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name, debug_mode=True)
         x = np.random.rand(N, D, W, H, C).astype(np.float32)
         expected = keras_model.predict(x)
@@ -1115,7 +1153,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self.assertTrue(data_transpose.shape == (N, C, W, H))
 
         expected = model.predict([data1, data2])
-        self.assertTrue(run_onnx_runtime('channel_first_input', onnx_model, [data_transpose, data2], expected, self.model_files))
+        self.assertTrue(
+            run_onnx_runtime('channel_first_input', onnx_model, [data_transpose, data2], expected, self.model_files))
 
     def test_channel_last(self):
         N, C, H, W = 2, 3, 5, 5
@@ -1135,23 +1174,6 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         x = np.transpose(x.astype(np.float32), [0, 3, 1, 2])
         self.assertTrue(run_onnx_runtime('channel_last_input', onnx_model, x, expected, self.model_files))
-
-    def _test_keras_model(self, model, model_name='onnx_conversion', rtol=1.e-3, atol=1.e-5, img_size=224):
-        preprocess_input = keras.applications.resnet50.preprocess_input
-        image = keras.preprocessing.image
-
-        img_path = os.path.join(os.path.dirname(__file__), 'data', 'street.jpg')
-        try:
-            img = image.load_img(img_path, target_size=(img_size, img_size))
-            x = image.img_to_array(img)
-            x = np.expand_dims(x, axis=0)
-            x = preprocess_input(x)
-
-            preds = model.predict(x)
-            onnx_model = keras2onnx.convert_keras(model, model.name)
-            self.assertTrue(run_onnx_runtime(model_name, onnx_model, x, preds, self.model_files, rtol=rtol, atol=atol))
-        except FileNotFoundError:
-            self.assertTrue(False, 'The image data does not exist.')
 
     def test_sub_model(self):
         class IdentityLayer(Layer):
@@ -1206,20 +1228,6 @@ class TestKerasTF2ONNX(unittest.TestCase):
             x = np.random.rand(2, 700, 420, 1).astype(np.float32)
             expected = model.predict(x)
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
-
-    def test_MobileNet(self):
-        mobilenet = keras.applications.mobilenet
-        model = mobilenet.MobileNet(weights='imagenet')
-        self._test_keras_model(model)
-
-    @unittest.skipIf(is_keras_older_than("2.2.3"),
-                     "There is no mobilenet_v2 module before keras 2.2.3.")
-    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("0.4.0"),
-                     "Failing for this verions of the runtime.")
-    def test_MobileNetV2(self):
-        mobilenet_v2 = keras.applications.mobilenet_v2
-        model = mobilenet_v2.MobileNetV2(weights='imagenet')
-        self._test_keras_model(model)
 
 
 if __name__ == "__main__":
