@@ -39,7 +39,8 @@ def convert_keras_advanced_activation(scope, operator, container):
         elif not is_keras_older_than('2.2.0') and \
                 isinstance(op, activations.ReLU):
             apply_clip(scope, operator.input_full_names[0], operator.output_full_names[0], container,
-                       operator_name=operator.full_name+'_clip', max=op.max_value, min=op.threshold)
+                       operator_name=operator.full_name+'_clip', max=op.max_value, min=op.threshold,
+                       op_version=6)
             return
         else:
             raise RuntimeError('Unsupported advanced layer found %s' % type(op))

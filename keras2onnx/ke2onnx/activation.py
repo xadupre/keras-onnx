@@ -60,7 +60,7 @@ def convert_keras_activation(scope, operator, container):
         # relu6(x) = min(relu(x), 6)
         apply_relu(scope, input_name, output_name + "_relu6", container)
         apply_clip(scope, output_name + "_relu6", output_name, container,
-                   min=0, max=6)
+                   min=0, max=6, op_version=6)
     else:
         if activation in [activation_get('softsign'), keras.activations.softsign]:
             op_type = 'Softsign'
