@@ -1120,7 +1120,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         x = _conv_layer(x, 16, 3)
         model = Model(inputs=[input], outputs=[x])
 
-        onnx_model = keras2onnx.convert_keras(model, model.name)
+        onnx_model = keras2onnx.convert_keras(model, model.name, target_opset=10)
         x = np.random.rand(2, 3, 320, 320).astype(np.float32)
         expected = model.predict(x)
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
