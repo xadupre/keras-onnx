@@ -53,7 +53,7 @@ jobs:
       echo Test numpy installation... && python -c "import numpy"
       pip install %ONNX_PATH%
       pip install h5py==2.9.0
-      pip install tensorflow
+      pip install tensorflow==1.14.0
       pip install %KERAS%
       pip install -r requirements.txt
       git clone https://github.com/microsoft/onnxconverter-common
@@ -65,7 +65,10 @@ jobs:
       pip install opencv-python
       pip install tqdm
       pip install keras-segmentation
+      pip install matplotlib
+      git clone https://github.com/qqwweee/keras-yolo3
       %INSTALL_KERAS_RESNET%
+      pip install git+https://www.github.com/keras-team/keras-contrib.git
     displayName: 'Install dependencies'
 
   - script: |

@@ -48,6 +48,7 @@ Input = keras.layers.Input
 InputLayer = keras.layers.InputLayer
 Lambda = keras.layers.Lambda
 Layer = keras.layers.Layer
+LeakyReLU = keras.layers.LeakyReLU
 LSTM = keras.layers.LSTM
 Maximum = keras.layers.Maximum
 MaxPool1D = keras.layers.MaxPool1D
@@ -760,7 +761,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         hidden_1 = SimpleRNN(5, activation='relu', return_sequences=True)(inputs2, initial_state=[state])
         output = Dense(2, activation='sigmoid')(hidden_1)
         keras_model = keras.Model(inputs=[inputs2, state], outputs=output)
-        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name, debug_mode=True)
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
 
         N, H, W, C = 3, 1, 2, 5
         x = np.random.rand(N, H, W).astype(np.float32, copy=False)
@@ -1088,7 +1089,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         sub_sum = Add()([mapped1_3, mapped2_2])
         keras_model = keras.Model(inputs=[input1, input2], outputs=sub_sum)
         keras_model.compile('sgd', loss='mse')
-        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name, debug_mode=True)
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
 
         x = [x, 2 * x]
         expected = keras_model.predict(x)
@@ -1125,6 +1126,62 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(x)
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
+    @unittest.skipIf(is_keras_older_than("2.2.4") or is_tf_keras,
+                     "ReLU support requires keras 2.2.4 or later.")
+    def test_shared_model_3(self):
+        def _bottleneck(x, filters, activation, strides, block_id):
+            padding = 'same' if strides == 1 else 'valid'
+            ch_axis = 1 if K.image_data_format() == 'channels_first' else -1
+            if strides > 1:
+                x = ZeroPadding2D(((0, 1), (0, 1)), data_format=K.image_data_format())(x)
+
+            x = Conv2D(filters // 2, (1, 1), padding='same', name='bottleneck_'+str(block_id)+'_conv_0',
+                          use_bias=False, data_format=K.image_data_format())(x)
+
+            x = BatchNormalization(axis=ch_axis, name='bottleneck_'+str(block_id)+'_bnorm_0')(x)
+
+            if activation == 'relu':
+                x = ReLU(name='bottleneck_'+str(block_id)+'_relu_0')(x)
+            elif activation == 'leaky':
+                x = LeakyReLU(name='bottleneck_'+str(block_id)+'_leaky_0')(x)
+            else:
+                assert False
+
+            x = Conv2D(filters // 2, (3, 3), padding=padding, name='bottleneck_'+str(block_id)+'_conv_1',
+                          strides=strides, use_bias=False, data_format=K.image_data_format())(x)
+            x = BatchNormalization(axis=ch_axis, name='bottleneck_'+str(block_id)+'_bnorm_1')(x)
+            if activation == 'relu':
+                x = ReLU(name='bottleneck_'+str(block_id)+'_relu_1')(x)
+            elif activation == 'leaky':
+                x = LeakyReLU(name='bottleneck_'+str(block_id)+'_leaky_1')(x)
+            else:
+                assert False
+
+            x = Conv2D(filters, (1, 1), padding='same', name='bottleneck_'+str(block_id)+'_conv_2',
+                          use_bias=False, data_format=K.image_data_format())(x)
+            x = BatchNormalization(axis=ch_axis, name='bottleneck_'+str(block_id)+'_bnorm_2')(x)
+            if activation == 'relu':
+                x = ReLU(name='bottleneck_'+str(block_id)+'_relu_2')(x)
+            elif activation == 'leaky':
+                x = LeakyReLU(name='bottleneck_'+str(block_id)+'_leaky_2')(x)
+            else:
+                assert False
+
+            return x
+
+        def convnet_7(input_shape, activation):
+            input = Input(shape=input_shape, name='input_1')
+            x = _bottleneck(input, filters=16, strides=1, activation=activation, block_id=1)
+            x = _bottleneck(x, filters=32, strides=2, activation=activation, block_id=2)
+            return Model(inputs=input, outputs=x, name='convnet_7')
+
+        for activation in ['relu', 'leaky']:
+            model = convnet_7(input_shape=(3, 96, 128), activation=activation)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            x = np.random.rand(1, 3, 96, 128).astype(np.float32)
+            expected = model.predict(x)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
     def test_masking(self):
         timesteps, features = (3, 5)
         model = Sequential([
@@ -1141,7 +1198,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         keras_model = keras.Sequential()
         keras_model.add(TimeDistributed(Dense(8), input_shape=(10, 16)))
         # keras_model.output_shape == (None, 10, 8)
-        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name, debug_mode=True)
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
         x = np.random.rand(32, 10, 16).astype(np.float32)
         expected = keras_model.predict(x)
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
@@ -1150,7 +1207,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         N, D, W, H, C = 5, 10, 15, 15, 3
         keras_model.add(TimeDistributed(Conv2D(64, (3, 3)),
                                         input_shape=(D, W, H, C)))
-        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name, debug_mode=True)
+        onnx_model = keras2onnx.convert_keras(keras_model, keras_model.name)
         x = np.random.rand(N, D, W, H, C).astype(np.float32)
         expected = keras_model.predict(x)
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
@@ -1241,7 +1298,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             output = Concatenate(name="output")(outputs)
             output = IdentityLayer()(output)
             model1 = Model(image_input, output)
-            onnx_model = keras2onnx.convert_keras(model1, model1.name, target_opset=7, debug_mode=True)
+            onnx_model = keras2onnx.convert_keras(model1, model1.name, target_opset=7)
             x = np.random.rand(2, 700, 420, 1).astype(np.float32)
             expected = model1.predict(x)
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))

@@ -7,6 +7,7 @@ import os
 import sys
 import unittest
 import keras2onnx
+from keras2onnx.proto import keras
 import onnx
 import numpy as np
 from os.path import dirname, abspath
@@ -19,6 +20,7 @@ model_file_name = 'mask_rcnn_coco.h5'
 if not os.path.exists(model_file_name):
     urllib.request.urlretrieve(MASKRCNN_WEIGHTS_PATH, model_file_name)
 
+keras.backend.clear_session()
 sys.path.insert(0, os.path.join(dirname(abspath(__file__)), '../mask_rcnn/'))
 from mask_rcnn import model, tf2onnx_contrib_op_conversion
 from distutils.version import StrictVersion
@@ -80,7 +82,7 @@ class TestMaskRCNN(unittest.TestCase):
             for n_ in compare_idx:
                 expected_list = expected[n_].flatten()
                 actual_list = actual[n_].flatten()
-                print_mismatches(self, case_name, n_, expected_list, actual_list, atol, rtol)
+                print_mismatches(case_name, n_, expected_list, actual_list, atol, rtol)
 
         self.assertTrue(res)
 
