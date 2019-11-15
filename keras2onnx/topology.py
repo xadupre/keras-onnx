@@ -188,6 +188,20 @@ class Topology:
         self._check_structure()
 
 
+def _remove_unused_initializers(nodes, initializers):
+    adjusted_initializers = []
+    nodes_input_set = set()
+    for n_ in nodes:
+        for input_name_ in n_.input:
+            nodes_input_set.add(input_name_)
+
+    for initializers_ in initializers:
+        if initializers_.name in nodes_input_set:
+            adjusted_initializers.append(initializers_)
+
+    return adjusted_initializers
+
+
 def convert_topology(topology, model_name, doc_string, target_opset, channel_first_inputs=None):
     """
     This function is used to convert our Topology object defined in _parser.py into a ONNX model (type: ModelProto).
@@ -269,11 +283,21 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
         extra_inputs.append(value_info)
 
     # enable the ONNX optimizations
+    graph = None
     try:
         import onnxconverter_common
-        nodes = onnxconverter_common.optimizer.optimize_onnx(container.nodes, nchw_inputs=nchw_inputs,
-                                                             inputs=container.inputs + extra_inputs,
-                                                             outputs=container.outputs)
+        if target_opset < 9:
+            nodes = onnxconverter_common.optimizer.optimize_onnx(container.nodes, nchw_inputs=nchw_inputs,
+                                                                 inputs=container.inputs + extra_inputs,
+                                                                 outputs=container.outputs)
+        else:
+            graph = onnxconverter_common.optimizer.optimize_onnx_graph(container.nodes, nchw_inputs=nchw_inputs,
+                                                                       inputs=container.inputs,
+                                                                       outputs=container.outputs,
+                                                                       initializers=container.initializers,
+                                                                       model_value_info=container.value_info,
+                                                                       model_name=model_name,
+                                                                       target_opset=container.target_opset)
     except ImportError:
         onnx_not_imported = 'onnxconverter_common is not imported,'
         if nchw_inputs:
@@ -286,16 +310,19 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
         k2o_logger().warning('There is an error({}) happened during optimizing on the converted model!'.format(type(e)))
         nodes = container.nodes
 
-    # Create a graph from its main components
-    if target_opset < 9:
-        graph = helper.make_graph(nodes, model_name, container.inputs + extra_inputs,
-                                  container.outputs, container.initializers)
-    else:
-        graph = helper.make_graph(nodes, model_name, container.inputs,
-                                  container.outputs, container.initializers)
+    if graph is None:
+        # Create a graph from its main components
+        adjusted_initializers = _remove_unused_initializers(nodes, container.initializers)
+        adjusted_extra_inputs = _remove_unused_initializers(nodes, extra_inputs)
+        if target_opset < 9:
+            graph = helper.make_graph(nodes, model_name, container.inputs + adjusted_extra_inputs,
+                                      container.outputs, adjusted_initializers)
+        else:
+            graph = helper.make_graph(nodes, model_name, container.inputs,
+                                      container.outputs, adjusted_initializers)
 
-    # Add extra information related to the graph
-    graph.value_info.extend(container.value_info)
+        # Add extra information related to the graph
+        graph.value_info.extend(container.value_info)
 
     # Create model
     onnx_model = helper.make_model(graph)
