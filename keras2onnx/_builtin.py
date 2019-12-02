@@ -21,6 +21,14 @@ class TYPES:
     All = 'All'
     Cast = 'Cast'
     ConcatV2 = 'ConcatV2'
+    GatherV2 = 'GatherV2'
+    Max = 'Max'
+    Mean = 'Mean'
+    Min = 'Min'
+    Pack = 'Pack'
+    Pad = 'Pad'
+    PadV2 = 'PadV2'
+    Prod = 'Prod'
     Reshape = 'Reshape'
     ResizeBilinear = 'ResizeBilinear'
     ResizeNearestNeighbor = 'ResizeNearestNeighbor'
@@ -28,6 +36,8 @@ class TYPES:
     Shape = 'Shape'
     Squeeze = 'Squeeze'
     StridedSlice = 'StridedSlice'
+    Sum = 'Sum'
+    Tile = 'Tile'
     TopKV2 = 'TopKV2'
 
     # converter internal types:
@@ -113,6 +123,23 @@ def convert_tf_const(scope, operator, container):
     container.add_initializer_from_tensor(onnx_tensor)
 
 
+@converter_func(TYPES.GatherV2)
+def convert_tf_gather_v2(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    axis = _cal_tensor_value(node.inputs[2]).tolist()
+    if operator.target_opset < 11:
+        op_version = 1
+    else:
+        op_version = 11
+    oopb.add_node_with_output("Gather",
+                              [operator.inputs[0].full_name, operator.inputs[1].full_name],
+                              operator.output_full_names,
+                              name=operator.full_name,
+                              op_version=op_version,
+                              axis=axis)
+
+
 @converter_func(TYPES.TD_Reshape)
 def convert_reshape_timedistributed(scope, operator, container):
     target_shape = operator.get_attr('target_shape')
@@ -143,6 +170,144 @@ def convert_tf_any_all(scope, operator, container):
                               operator.output_full_names,
                               name=operator.full_name,
                               op_version=9)
+
+
+@converter_func(TYPES.Pack)
+def convert_tf_pack(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    axis = node.get_attr('axis')
+    if axis < 0 and operator.target_opset < 11:
+        axis += len(_cal_tensor_shape(node.inputs[0])) + 1
+
+    inputs = []
+    for i in range(len(node.inputs)):
+        unsqueeze = oopb.add_node('Unsqueeze',
+                                  operator.inputs[i].full_name,
+                                  operator.full_name + '_unsqueeze' + str(i), axes=[axis])
+        inputs.append(unsqueeze)
+
+    oopb.apply_op_with_output("apply_concat",
+                              inputs,
+                              operator.outputs[0].full_name,
+                              name=operator.full_name + '_concat',
+                              axis=axis)
+
+
+def _convert_tf_pad(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    paddings = np.array(_cal_tensor_value(node.inputs[1])).transpose().flatten()
+    mode = node.get_attr("mode") if hasattr(node, 'mode') else None
+    attrs = {}
+
+    if mode:
+        mode = mode.s.decode("utf-8").lower()
+        attrs['mode'] = mode
+    if mode not in [None, "constant"]:
+        raise ValueError(mode + " pad mode is not supported")
+
+    origin_dtype = _to_onnx_type(node.outputs[0].dtype)
+    if origin_dtype not in [onnx_pb.TensorProto.FLOAT16, onnx_pb.TensorProto.FLOAT,
+                            onnx_pb.TensorProto.DOUBLE]:
+        cast_op = oopb.apply_cast(operator.input_full_names[0],
+                                  to=onnx_proto.TensorProto.FLOAT,
+                                  name=operator.full_name + '_cast')
+    else:
+        cast_op = operator.input_full_names[0]
+
+    if operator.target_opset < 11:
+        attrs['pads'] = paddings
+        if mode in [None, "constant"] and len(node.inputs) == 3:
+            const_val = _cal_tensor_value(node.inputs[2]).tolist()
+            attrs['value'] = const_val
+        pad_node =  oopb.add_node("Pad",
+                                  cast_op,
+                                  name=operator.full_name + 'pad',
+                                  op_version=2, **attrs)
+    else:
+        if len(node.inputs) == 3:
+            pad_inputs = [cast_op,
+                          ('_pads', oopb.int64, np.array(paddings.astype(np.int64), dtype='int64')),
+                          operator.input_full_names[2]]
+        else:
+            pad_inputs = [cast_op,
+                          ('_pads', oopb.int64, np.array(paddings.astype(np.int64), dtype='int64'))]
+        pad_node =  oopb.add_node("Pad",
+                                  pad_inputs,
+                                  name=operator.full_name + 'pad',
+                                  op_version=11, **attrs)
+
+    if origin_dtype not in [onnx_pb.TensorProto.FLOAT16, onnx_pb.TensorProto.FLOAT,
+                            onnx_pb.TensorProto.DOUBLE]:
+        oopb.apply_op_with_output("apply_cast",
+                                  pad_node,
+                                  operator.output_full_names,
+                                  name=operator.full_name + '_castback',
+                                  to=origin_dtype)
+    else:
+        oopb.apply_op_with_output("apply_identity",
+                                  pad_node,
+                                  operator.output_full_names,
+                                  name=operator.full_name + '_identity')
+
+
+@converter_func(TYPES.Pad)
+def convert_tf_pad(scope, operator, container):
+    _convert_tf_pad(scope, operator, container)
+
+
+@converter_func(TYPES.PadV2)
+def convert_tf_pad_v2(scope, operator, container):
+    _convert_tf_pad(scope, operator, container)
+
+
+def _convert_tf_reduce_op(scope, operator, container, onnx_op):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    axes = _cal_tensor_value(node.inputs[1]).tolist()
+    axes = [axes] if np.isscalar(axes) else axes
+
+    if operator.target_opset < 11:
+        input_shape = _cal_tensor_shape(node.inputs[0])
+        if input_shape is None:
+            if any([val < 0 for val in axes]):
+                raise ValueError("reduce_op: cannot have negative axis because we don't know input rank")
+        else:
+            input_rank = len(input_shape)
+            axes = [val + input_rank if val < 0 else val for val in axes]
+
+    keepdims = node.get_attr("keep_dims")
+    oopb.add_node_with_output(onnx_op,
+                              operator.inputs[0].full_name,
+                              operator.outputs[0].full_name,
+                              name=operator.full_name + '_reduce_min',
+                              axes=axes, keepdims=keepdims)
+
+
+@converter_func(TYPES.Max)
+def convert_tf_min(scope, operator, container):
+    _convert_tf_reduce_op(scope, operator, container, 'ReduceMax')
+
+
+@converter_func(TYPES.Min)
+def convert_tf_min(scope, operator, container):
+    _convert_tf_reduce_op(scope, operator, container, 'ReduceMin')
+
+
+@converter_func(TYPES.Mean)
+def convert_tf_mean(scope, operator, container):
+    _convert_tf_reduce_op(scope, operator, container, 'ReduceMean')
+
+
+@converter_func(TYPES.Sum)
+def convert_tf_sum(scope, operator, container):
+    _convert_tf_reduce_op(scope, operator, container, 'ReduceSum')
+
+
+@converter_func(TYPES.Prod)
+def convert_tf_prod(scope, operator, container):
+    _convert_tf_reduce_op(scope, operator, container, 'ReduceProd')
 
 
 @converter_func(TYPES.Reshape)
@@ -315,6 +480,18 @@ def convert_tf_squeeze(scope, operator, container):
                               operator.output_full_names,
                               operator.inputs[0].full_name + '_squeeze',
                               axes=axis)
+
+
+@converter_func(TYPES.Tile)
+def convert_tf_tile(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    cast_1 = oopb.add_node('Cast',
+                           operator.inputs[1].full_name,
+                           operator.inputs[1].full_name + '_1_cast', to=onnx_proto.TensorProto.INT64)
+    oopb.add_node_with_output('Tile',
+                              [operator.input_full_names[0], cast_1],
+                              operator.output_full_names,
+                              operator.inputs[0].full_name + '_tile')
 
 
 @converter_func(TYPES.TopKV2)
