@@ -507,7 +507,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("0.7.0"),
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("1.1.0"),
                      "Failing for this verions of the runtime.")
     def test_conv3d_transpose(self):
         self._conv3trans_helper(3, 5, (2, 2, 2), (1, 1, 1), (5, 5, 8))
