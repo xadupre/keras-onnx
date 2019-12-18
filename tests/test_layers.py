@@ -249,6 +249,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
                     self.assertTrue(
                         run_onnx_runtime('onnx_' + reduce_name[idx], onnx_model, data, expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("1.2.0"),
+                     "Failing for this verions of the runtime.")
     def test_tf_reshape(self):
         model = Sequential()
         model.add(Lambda(lambda x: tf.reshape(x, [-1, 2, 4]), input_shape=[2, 2, 2]))
@@ -575,7 +577,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("1.1.0"),
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("1.2.0"),
                      "Failing for this verions of the runtime.")
     def test_conv3d_transpose(self):
         self._conv3trans_helper(3, 5, (2, 2, 2), (1, 1, 1), (5, 5, 8))
@@ -837,6 +839,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         layer = Cropping2D(cropping=((1, 2), (2, 3)), data_format='channels_last')
         self._misc_conv_helper(layer, ishape, opset_)
 
+    @unittest.skipIf(StrictVersion(onnxruntime.__version__) < StrictVersion("1.2.0"),
+                     "Failing for this verions of the runtime.")
     def test_upsample(self):
         if is_keras_later_than('2.1.6'):
             ishape = (20, 5)
