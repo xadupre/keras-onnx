@@ -148,6 +148,15 @@ class TestKerasTF2ONNX(unittest.TestCase):
             expected = model.predict([data1, data2])
             self.assertTrue(run_onnx_runtime('onnx_concat', onnx_model, [data1, data2], expected, self.model_files))
 
+    def test_tf_expand_dims(self):
+        for dim in [0, 1, -1]:
+            model = Sequential()
+            model.add(Lambda(lambda x: tf.expand_dims(x, dim), input_shape=[2, 3, 4]))
+            onnx_model = keras2onnx.convert_keras(model, 'test_tf_expand_dims')
+            data = np.random.rand(1, 2, 3, 4).astype(np.float32)
+            expected = model.predict(data)
+            self.assertTrue(run_onnx_runtime('onnx_tf_expand_dims', onnx_model, data, expected, self.model_files))
+
     def test_tf_gather(self):
         model = Sequential()
         model.add(Lambda(lambda x: tf.gather(x, [1, 1], axis=1), input_shape=[5, 5]))
@@ -155,6 +164,52 @@ class TestKerasTF2ONNX(unittest.TestCase):
         data = np.random.rand(3, 5, 5).astype(np.float32)
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_tf_gather', onnx_model, data, expected, self.model_files))
+
+    def test_tf_maximum_minimum(self):
+        input1_shape_list = [(2, 3), (2, 3)]
+        input2_shape_list = [(2, 3), (2, 1)]
+
+        def my_func_1(x):
+            return tf.minimum(tf.maximum(x[0], x[1]), 0.5)
+
+        def my_func_2(x):
+            return tf.minimum(tf.maximum(x[0], 0.5), x[1])
+
+        for idx_ in range(len(input1_shape_list)):
+            for myFunc in [my_func_1, my_func_2]:
+                input1 = Input(shape=input1_shape_list[idx_], dtype=tf.float32)
+                input2 = Input(shape=input2_shape_list[idx_], dtype=tf.float32)
+                added = Lambda(myFunc)([input1, input2])
+                model = keras.models.Model(inputs=[input1, input2], outputs=added)
+
+                onnx_model = keras2onnx.convert_keras(model, 'tf_maximum_minimum')
+                batch_data1_shape = (2,) + input1_shape_list[idx_]
+                batch_data2_shape = (2,) + input2_shape_list[idx_]
+                data1 = np.random.rand(*batch_data1_shape).astype(np.float32)
+                data2 = np.random.rand(*batch_data2_shape).astype(np.float32)
+                expected = model.predict([data1, data2])
+                self.assertTrue(run_onnx_runtime('tf_maximum_minimum', onnx_model, [data1, data2], expected, self.model_files))
+
+        def my_func_3(x):
+            return tf.minimum(tf.maximum(x[0], x[1]), 50)
+
+        def my_func_4(x):
+            return tf.minimum(tf.maximum(x[0], 50), x[1])
+
+        for idx_ in range(len(input1_shape_list)):
+            for myFunc in [my_func_3, my_func_4]:
+                input1 = Input(shape=input1_shape_list[idx_], dtype=tf.int32)
+                input2 = Input(shape=input2_shape_list[idx_], dtype=tf.int32)
+                added = Lambda(myFunc)([input1, input2])
+                model = keras.models.Model(inputs=[input1, input2], outputs=added)
+
+                onnx_model = keras2onnx.convert_keras(model, 'tf_maximum_minimum')
+                batch_data1_shape = (2,) + input1_shape_list[idx_]
+                batch_data2_shape = (2,) + input2_shape_list[idx_]
+                data1 = (100 * np.random.rand(*batch_data1_shape)).astype(np.int32)
+                data2 = (100 * np.random.rand(*batch_data2_shape)).astype(np.int32)
+                expected = model.predict([data1, data2])
+                self.assertTrue(run_onnx_runtime('tf_maximum_minimum', onnx_model, [data1, data2], expected, self.model_files))
 
     def test_tf_pad(self):
         def my_func_1(x):
