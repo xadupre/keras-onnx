@@ -10,6 +10,8 @@ import numpy as np
 from onnx import numpy_helper, mapping
 from .common.onnx_ops import apply_identity, apply_reshape, OnnxOperatorBuilder
 from .funcbook import converter_func, set_converters
+from .proto import keras
+from .proto.tfcompat import is_tf2
 
 
 class TYPES:
@@ -25,6 +27,7 @@ class TYPES:
     Conv1D = 'Conv1D'
     Conv2D = 'Conv2D'
     ExpandDims = 'ExpandDims'
+    Fill = 'Fill'
     FusedBatchNorm = 'FusedBatchNorm'
     FusedBatchNormV2 = 'FusedBatchNormV2'
     FusedBatchNormV3 = 'FusedBatchNormV3'
@@ -34,18 +37,23 @@ class TYPES:
     Mean = 'Mean'
     Min = 'Min'
     Minimum = 'Minimum'
+    NonMaxSuppressionV2 = 'NonMaxSuppressionV2'
+    NonMaxSuppressionV3 = 'NonMaxSuppressionV3'
     NotEqual = 'NotEqual'
     Pack = 'Pack'
     Pad = 'Pad'
     PadV2 = 'PadV2'
     Prod = 'Prod'
     Range = 'Range'
+    ReadVariableOp = 'ReadVariableOp'
     Reshape = 'Reshape'
     ResizeBilinear = 'ResizeBilinear'
     ResizeNearestNeighbor = 'ResizeNearestNeighbor'
     Round = 'Round'
     Rsqrt = 'Rsqrt'
+    Select = 'Select'
     Shape = 'Shape'
+    Size = 'Size'
     Squeeze = 'Squeeze'
     StridedSlice = 'StridedSlice'
     Sum = 'Sum'
@@ -53,6 +61,9 @@ class TYPES:
     TopKV2 = 'TopKV2'
     Transpose = 'Transpose'
     Unpack = 'Unpack'
+    VarHandleOp = 'VarHandleOp'
+    VariableV2 = 'VariableV2'
+    Where = 'Where'
 
     # converter internal types:
     TD_Reshape = '_reshape_timedistributed'
@@ -209,7 +220,9 @@ def _conv_convert_inputs(oopb, operator, node, attrs, with_kernel=False, new_ker
             transpose_node_kernel = oopb.apply_identity([('_start', onnx_type, val)],
                                                         name=operator.full_name + '_transpose_kernel')
         else:
-            raise ValueError("The weight of the op " + operator.full_name + " is not constant.")
+            transpose_node_kernel = oopb.apply_transpose(node.inputs[1].name,
+                                                         name=operator.full_name + '_transpose_kernel',
+                                                         perm=HWCN_TO_NCHW)
         # TODO, some onnx conv ops require the reshape the kernel (ie. depthwise_conv2d)
     else:
         transpose_node_kernel = [ node.inputs[1].name ]
@@ -238,7 +251,6 @@ def _conv_dims_attr(node, dims):
     if _is_nhwc(node):
         if len(dims) == 2:
             h, w = dims
-            c = n = 1
         else:
             n, h, w, c = dims
     else:
@@ -268,7 +280,7 @@ def _convert_tf_conv2d(scope, operator, container):
                 input_shape = _spatial_map(input_shape, NHWC_TO_NCHW)
                 output_shape = _spatial_map(output_shape, NHWC_TO_NCHW)
             # calculate pads
-            if any(input_shape[i + 2] == -1 or output_shape[i + 2] == -1 for i in range(spatial)):
+            if any(input_shape[i + 2] == None or output_shape[i + 2] == None for i in range(spatial)):
                 attrs["auto_pad"] = "SAME_UPPER"
             else:
                 for i in range(spatial):
@@ -301,7 +313,7 @@ def convert_tf_expand_dims(scope, operator, container):
                               [operator.inputs[0].full_name],
                               operator.output_full_names,
                               name=operator.full_name,
-                              axis=axis,
+                              axes=[axis],
                               rank=rank)
 
 
@@ -335,6 +347,61 @@ def _convert_tf_fused_batch_norm_core(scope, operator, container):
                               operator.outputs[0].full_name,
                               name=operator.full_name)
 
+
+@converter_func(TYPES.Fill)
+def convert_tf_fill(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    if operator.target_opset < 9:
+        fill_shape = _cal_tensor_shape(node.inputs[0])
+        fill_shape_dims = fill_shape[0]
+        val_dtype = _to_onnx_type(node.inputs[1].dtype)
+        need_cast = val_dtype != oopb.float and operator.target_opset < 9
+        if need_cast:
+            cast_input_val = oopb.apply_cast(operator.inputs[1].full_name,
+                                             to=oopb.float,
+                                             name=operator.full_name + '_input_value_cast')
+        else:
+            cast_input_val = [ operator.inputs[1].full_name ]
+        idx = 0
+        for _ in range(fill_shape_dims):
+            cast_input_val = oopb.apply_unsqueeze(cast_input_val,
+                                                  name=operator.full_name + '_unsqueeze_' + str(idx),
+                                                  axes=[0])
+            idx += 1
+        cast_input_dim = oopb.apply_cast(operator.inputs[0].full_name,
+                                         to=oopb.int64,
+                                         name=operator.full_name + '_input_dim_cast')
+        if need_cast:
+            tile_node = oopb.apply_tile(cast_input_val + cast_input_dim,
+                                        name=operator.full_name + '_tile')
+            oopb.apply_op_with_output("apply_cast",
+                                      tile_node,
+                                      operator.output_full_names,
+                                      name=operator.full_name)
+        else:
+            oopb.apply_op_with_output("apply_tile",
+                                      cast_input_val,
+                                      operator.output_full_names,
+                                      name=operator.full_name,
+                                      repeats=cast_input_dim[0])
+    else:
+        val_dtype = _to_onnx_type(node.inputs[0].dtype)
+        if val_dtype != oopb.int64:
+            cast_input_dim = oopb.apply_cast(operator.inputs[0].full_name,
+                                             to=oopb.int64,
+                                             name=operator.full_name + '_input_dim_cast')
+        else:
+            cast_input_dim = [ operator.inputs[0].full_name ]
+
+        val = _cal_tensor_value(node.inputs[1])
+        value = np.array([val])
+        attrs = {"value": numpy_helper.from_array(value)}
+        oopb.add_node_with_output('ConstantOfShape',
+                                  cast_input_dim,
+                                  operator.outputs[0].full_name,
+                                  name=operator.full_name,
+                                  **attrs)
 
 @converter_func(TYPES.FusedBatchNorm)
 def convert_tf_fused_batch_norm(scope, operator, container):
@@ -440,6 +507,39 @@ def convert_tf_maximum(scope, operator, container):
 def convert_tf_minimum(scope, operator, container):
     oopb = OnnxOperatorBuilder(container, scope)
     _convert_tf_maximum_minimum(scope, operator, container, oopb, oopb.apply_min)
+
+
+@converter_func(TYPES.NonMaxSuppressionV2, TYPES.NonMaxSuppressionV3)
+def convert_tf_nonmaxsuppression(scope, operator, container):
+    if operator.target_opset < 10:
+        raise ValueError("NonMaxSuppression op is not supported for opset < 10")
+    else:
+        oopb = OnnxOperatorBuilder(container, scope)
+        input_0 = oopb.apply_unsqueeze(operator.inputs[0].full_name,
+                                       name=operator.full_name + '_unsqueeze_0',
+                                       axes=[0])
+        input_1 = oopb.apply_unsqueeze(operator.inputs[1].full_name,
+                                       name=operator.full_name + '_unsqueeze_1',
+                                       axes=[0, 1])
+        input_2 = oopb.apply_cast(operator.inputs[2].full_name,
+                                  to=oopb.int64,
+                                  name=operator.full_name + '_cast_0')
+        non_max_v = 10 if operator.target_opset < 11 else 11
+        nonmaxsuppress = oopb.add_node('NonMaxSuppression',
+                                       input_0 + input_1 + input_2 + operator.input_full_names[3:],
+                                       operator.full_name + '_nonmax',
+                                       op_version=non_max_v)
+        slice_node = oopb.apply_slice(nonmaxsuppress,
+                                      name=operator.full_name + '_slice',
+                                      starts=[2], ends=[3], axes=[1])
+        squeeze_node = oopb.apply_squeeze(slice_node,
+                                          name=operator.full_name + '_squeeze',
+                                          axes=[1])
+        oopb.apply_op_with_output("apply_cast",
+                                  squeeze_node,
+                                  operator.output_full_names,
+                                  name=operator.full_name + '_castback',
+                                  to=oopb.int32)
 
 
 def _make_range_const(scope, operator, container, start, limit, delta, onnx_type):
@@ -714,6 +814,55 @@ def convert_tf_reshape(scope, operator, container):
                               desired_shape=shape_value)
 
 
+@converter_func(TYPES.Select)
+def convert_tf_select(scope, operator, container):
+    if operator.target_opset < 9:
+        raise ValueError("Select op is not supported for opset = " + str(operator.target_opset))
+    else:
+        oopb = OnnxOperatorBuilder(container, scope)
+        node = operator.raw_operator
+        cond_shape = _cal_tensor_shape(node.inputs[0])
+        input_shape = _cal_tensor_shape(node.inputs[1])
+        if input_shape is None:
+            input_shape = _cal_tensor_shape(node.inputs[2])
+        input_rank = len(input_shape)
+        if len(cond_shape) == 1 and input_rank > 1:
+            broadcast_shape = [cond_shape[0]] + [1] * (input_rank - 1)
+            reshape_node = oopb.apply_reshape(operator.inputs[0].full_name,
+                                              name=operator.full_name + '_reshape',
+                                              desired_shape=broadcast_shape)
+            input_nodes = reshape_node + operator.input_full_names[1:]
+        else:
+            input_nodes = operator.input_full_names
+
+        oopb.add_node_with_output('Where',
+                                  input_nodes,
+                                  operator.outputs[0].full_name,
+                                  name=operator.full_name + '_where',
+                                  op_version=9)
+
+
+@converter_func(TYPES.Size)
+def convert_tf_size(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    dtype = _to_onnx_type(node.outputs[0].dtype)
+    if dtype != oopb.int64:
+        size_node = oopb.add_node('Size',
+                                  operator.inputs[0].full_name,
+                                  operator.inputs[0].full_name + '_size')
+        oopb.apply_op_with_output("apply_cast",
+                                  size_node,
+                                  operator.outputs[0].full_name,
+                                  name=operator.full_name + '_size_cast',
+                                  to=dtype)
+    else:
+        oopb.add_node_with_output('Size',
+                                  operator.inputs[0].full_name,
+                                  operator.output_full_names,
+                                  name=operator.inputs[0].full_name + '_size')
+
+
 def _convert_tf_resize(scope, operator, container, mode):
     node = operator.raw_operator
     oopb = OnnxOperatorBuilder(container, scope)
@@ -967,6 +1116,17 @@ def convert_tf_not_equal(scope, operator, container):
                                   name=operator.full_name + '_not')
 
 
+@converter_func(TYPES.ReadVariableOp)
+def convert_tf_read_variable_op(scope, operator, container):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+    if len(node.inputs) == 1 and len(node.outputs) == 1:
+        oopb.apply_op_with_output("apply_identity",
+                                  operator.input_full_names,
+                                  operator.output_full_names,
+                                  name=operator.full_name)
+
+
 def _process_begin_end(new_begin, new_end, stride):
     if stride >= 0:
         new_begin.append(0)
@@ -1143,7 +1303,77 @@ def convert_tf_unpack(scope, operator, container):
                                   split_node[i],
                                   operator.outputs[i].full_name,
                                   name=operator.full_name + '_squeeze_' + str(i),
-                                  axis=axis_val)
+                                  axes=[axis_val])
+
+
+def _convert_tf_var_handle_helper(scope, operator, container, var_handle_name, graph_op_type):
+    oopb = OnnxOperatorBuilder(container, scope)
+    node = operator.raw_operator
+
+    if is_tf2:
+        v_output = node.outputs[0].name
+        get_assign_value = False
+        for graph_node_name in node.graph._nodes_by_name:
+            graph_op = node.graph._nodes_by_name[graph_node_name]
+            if graph_op.type == graph_op_type and len(graph_op.inputs) > 1 and v_output == graph_op.inputs[0].name:
+                cur_i = graph_op.inputs[1].op
+                if cur_i.type == 'Const':
+                    val_type = cur_i.get_attr('dtype')
+                    val_shape = [ dim.size for dim in cur_i.get_attr('value').tensor_shape.dim]
+                    if cur_i.get_attr('value').tensor_content != b'':
+                        val_arr = np.frombuffer(cur_i.get_attr('value').tensor_content, val_type.as_numpy_dtype).reshape(*val_shape)
+                    else:
+                        val = cur_i.get_attr('value').float_val[0]
+                        val_arr = np.full(tuple(val_shape), val)
+                    node_input = [('_identity', _to_onnx_type(val_type), val_arr)]
+                    get_assign_value = True
+                    break
+    else:
+        sess = keras.backend.get_session()
+        if node.type == 'VarHandleOp':
+            val_arr = sess.run([node.name + "/Read/ReadVariableOp:0"])[0]
+            graph_op = node.graph._nodes_by_name[node.name + "/Read/ReadVariableOp"]
+        else:
+            val_arr = sess.run([node.name + ":0"])[0]
+            graph_op = node.graph._nodes_by_name[node.name]
+        val_type = graph_op.get_attr('dtype')
+        node_input = [('_identity', _to_onnx_type(val_type), val_arr)]
+        get_assign_value = True
+
+    if get_assign_value:
+        oopb.add_node_with_output('Identity',
+                                  node_input,
+                                  operator.output_full_names,
+                                  operator.outputs[0].full_name + '_identity')
+    else:
+        raise ValueError(var_handle_name + " op " + node.name + " is not properly processed")
+
+
+@converter_func(TYPES.VarHandleOp)
+def convert_tf_var_handle_op(scope, operator, container):
+    _convert_tf_var_handle_helper(scope, operator, container, "VarHandleOp", "AssignVariableOp")
+
+
+@converter_func(TYPES.VariableV2)
+def convert_tf_variable_v2(scope, operator, container):
+    _convert_tf_var_handle_helper(scope, operator, container, "VariableV2", "Assign")
+
+
+@converter_func(TYPES.Where)
+def convert_tf_where(scope, operator, container):
+    if operator.target_opset < 9:
+        raise ValueError("Where op is not supported for opset < 9")
+    else:
+        oopb = OnnxOperatorBuilder(container, scope)
+        node = operator.raw_operator
+        where_node = oopb.add_node('NonZero',
+                                   operator.inputs[0].full_name,
+                                   operator.inputs[0].full_name + '_non_zero')
+        oopb.apply_op_with_output("apply_transpose",
+                                  where_node,
+                                  operator.output_full_names,
+                                  name=operator.full_name + '_transpose',
+                                  perm=list(reversed(range(len(node.outputs[0].shape)))))
 
 
 direct_ops = {"Abs": ("apply_abs",),

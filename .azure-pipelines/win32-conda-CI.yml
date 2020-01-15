@@ -30,7 +30,7 @@ jobs:
         python.version: '3.7'
         ONNX_PATH: onnx==1.6.0
         KERAS: keras
-        TENSORFLOW_PATH: tensorflow
+        TENSORFLOW_PATH: tensorflow==2.0.0
 
     maxParallel: 3
 
@@ -54,11 +54,11 @@ jobs:
       pip install h5py==2.9.0
       pip install %TENSORFLOW_PATH%
       pip install %KERAS%
-      pip install -r requirements.txt
       git clone https://github.com/microsoft/onnxconverter-common
       cd onnxconverter-common
       pip install -e .
       cd ..
+      pip install -r requirements.txt
       pip install -r requirements-dev.txt
     displayName: 'Install dependencies'
 

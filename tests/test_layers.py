@@ -199,6 +199,14 @@ class TestKerasTF2ONNX(unittest.TestCase):
             expected = model.predict(data)
             self.assertTrue(run_onnx_runtime('onnx_tf_expand_dims', onnx_model, data, expected, self.model_files))
 
+    def test_tf_fill(self):
+        model = Sequential()
+        model.add(Lambda(lambda x: x + tf.fill([2, 3], 2.3), input_shape=[2, 3]))
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_fill')
+        data = np.random.rand(3, 2, 3).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(run_onnx_runtime('onnx_fill', onnx_model, data, expected, self.model_files))
+
     def test_tf_fused_batch_norm(self):
         def my_func_1(x):
             beta = tf.constant([0.2, 0.3, 0.4, 0.5])
@@ -356,7 +364,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_tf_reduce_op(self):
         reduce_name = ['tf_min', 'tf_max', 'tf_mean', 'tf_sum', 'tf_prod']
         reduce_ops = [K.min, K.max, K.mean, K.sum, K.prod]
-        axis_list = [1] if is_tf2 and is_tf_keras else [1, None]
+        axis_list = [1] if is_tf_keras else [1, None]
         keepdims_val = [True] if is_tf_keras else [True, False]
         for idx, reduce_op in enumerate(reduce_ops):
             for axis in axis_list:
@@ -365,6 +373,18 @@ class TestKerasTF2ONNX(unittest.TestCase):
                     model.add(Lambda(lambda x: reduce_op(x, axis=axis, keepdims=keepdims), input_shape=[2, 2]))
                     onnx_model = keras2onnx.convert_keras(model, 'test_' + reduce_name[idx])
                     data = np.random.rand(3, 2, 2).astype(np.float32)
+                    expected = model.predict(data)
+                    self.assertTrue(
+                        run_onnx_runtime('onnx_' + reduce_name[idx], onnx_model, data, expected, self.model_files))
+
+        axis_list = [1] if is_tf2 and is_tf_keras else [1, None]
+        for idx, reduce_op in enumerate(reduce_ops):
+            for axis in axis_list:
+                for keepdims in keepdims_val:
+                    model = Sequential()
+                    model.add(Lambda(lambda x: reduce_op(x, axis=axis, keepdims=keepdims), input_shape=[2, 2]))
+                    onnx_model = keras2onnx.convert_keras(model, 'test_' + reduce_name[idx])
+                    data = np.random.rand(1, 2, 2).astype(np.float32)
                     expected = model.predict(data)
                     self.assertTrue(
                         run_onnx_runtime('onnx_' + reduce_name[idx], onnx_model, data, expected, self.model_files))
@@ -414,6 +434,14 @@ class TestKerasTF2ONNX(unittest.TestCase):
                     data = np.random.rand(2, 10, 20, 3).astype(np.float32)
                     expected = model.predict(data)
                     self.assertTrue(run_onnx_runtime('onnx_resize', onnx_model, data, expected, self.model_files))
+
+    def test_tf_size(self):
+        model = Sequential()
+        model.add(Lambda(lambda x: x + tf.cast(tf.size(x), tf.float32), input_shape=[2, 3, 5]))
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_size')
+        data = np.random.rand(3, 2, 3, 5).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(run_onnx_runtime('onnx_tf_size', onnx_model, data, expected, self.model_files))
 
     def test_tf_squeeze(self):
         for func_ in [lambda x: tf.squeeze(x, [1]), lambda x: tf.squeeze(x), lambda x: tf.squeeze(x, [-2])]:
@@ -528,6 +556,52 @@ class TestKerasTF2ONNX(unittest.TestCase):
             data = np.random.rand(3, 2, 3, 4).astype(np.float32)
             expected = model.predict(data)
             self.assertTrue(run_onnx_runtime('onnx_unpack', onnx_model, data, expected, self.model_files))
+
+    @unittest.skipIf(is_tf2,
+                     "tf 2.0 is not supported.")
+    def test_tf_variable(self):
+        val = np.random.random((2, 3, 4))
+        for var_ in [K.variable(value=val), K.zeros(shape=(2, 3, 4)), K.ones(shape=(2, 3, 4))]:
+            model = Sequential()
+            model.add(Lambda(lambda x: x + var_, input_shape=[2, 3, 4]))
+            onnx_model = keras2onnx.convert_keras(model, 'test_tf_variable')
+            data = np.random.rand(3, 2, 3, 4).astype(np.float32)
+            expected = model.predict(data)
+            self.assertTrue(run_onnx_runtime('onnx_variable', onnx_model, data, expected, self.model_files))
+
+    @unittest.skipIf(is_tf2 or get_opset_number_from_onnx() < 9,
+                     "tf 2.0 or opset < 9 is not supported.")
+    def test_tf_where(self):
+        model = Sequential()
+        a = tf.constant([[[1, 1], [3, 6]], [[7, 8], [9, 9]]])
+        b = tf.where(tf.equal(a, 3))
+        model.add(Lambda(lambda x: b, input_shape=(2,)))
+        data = np.random.rand(1, 2).astype(np.float32)
+        expected = model.predict(data)
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_where')
+        self.assertTrue(run_onnx_runtime('onnx_where', onnx_model, data, expected, self.model_files))
+
+        model = Sequential()
+        a = tf.constant([[[1, 1], [3, 6]], [[7, 8], [3, 3]]])
+        b = tf.where(tf.equal(a, 3))
+        model.add(Lambda(lambda x: b, input_shape=(2,)))
+        data = np.random.rand(3, 2).astype(np.float32)
+        expected = model.predict(data)
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_where')
+        self.assertTrue(run_onnx_runtime('onnx_where', onnx_model, data, expected, self.model_files))
+
+        target_opset = get_opset_number_from_onnx()
+        if target_opset >= 9:
+            model = Sequential()
+            x = tf.constant([[1,2,3],[4,5,6]])
+            y = tf.constant([[7,8,9],[10,11,12]])
+            condition = tf.constant([[True, False, False],[False, True, True]])
+            b = tf.where(condition, x, y)
+            model.add(Lambda(lambda x: b, input_shape=(2,)))
+            data = np.random.rand(2, 2).astype(np.float32)
+            expected = model.predict(data)
+            onnx_model = keras2onnx.convert_keras(model, 'test_tf_where')
+            self.assertTrue(run_onnx_runtime('onnx_where', onnx_model, data, expected, self.model_files))
 
     @unittest.skipIf(get_opset_number_from_onnx() < 9, "conversion needs opset 9.")
     def test_any_all(self):
@@ -1010,8 +1084,10 @@ class TestKerasTF2ONNX(unittest.TestCase):
             layer = UpSampling2D(size=size, data_format='channels_last')
             self._misc_conv_helper(layer, ishape)
             if not is_keras_older_than("2.2.3"):
-                layer = UpSampling2D(size=size, data_format='channels_last', interpolation='bilinear')
-                self._misc_conv_helper(layer, ishape)
+                opset_ = get_opset_number_from_onnx()
+                if opset_ >= 11 or not is_tf_keras:
+                    layer = UpSampling2D(size=size, data_format='channels_last', interpolation='bilinear')
+                    self._misc_conv_helper(layer, ishape)
         ishape = (20, 20, 20, 1)
         layer = UpSampling3D(size=(2, 3, 4), data_format='channels_last')
         self._misc_conv_helper(layer, ishape)

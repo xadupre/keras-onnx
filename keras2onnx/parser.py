@@ -273,10 +273,29 @@ def _on_parsing_model_layer(sub_model, graph, target_kenode, varset, top_kenode=
     return ts_inputs, ts_outputs
 
 
-def _check_tfnode_converter_availability(nodelist):
+def _check_tfnode_converter_availability(graph, node):
+    var_assign_map = {'VarHandleOp': 'AssignVariableOp', 'VariableV2': 'Assign'}
+    if node.type in var_assign_map:
+        if is_tf2:
+            v_output = node.outputs[0].name
+            for graph_node_name in graph._nodes_by_name:
+                graph_op = graph._nodes_by_name[graph_node_name]
+                if graph_op.type == var_assign_map[node.type] and len(graph_op.inputs) > 1 and v_output == graph_op.inputs[0].name:
+                    cur_i = graph_op.inputs[1].op
+                    if cur_i.type == 'Const' and cur_i.get_attr('value').tensor_content != b'':
+                        return True
+            return False
+        else:
+            return True
+    else:
+        cvt = get_converter(node.type)
+        return cvt is not None
+
+
+def _check_tfnodes_converter_availability(graph, nodelist):
     for n_ in nodelist:
-        cvt = get_converter(n_.type)
-        if cvt is None:
+        flag = _check_tfnode_converter_availability(graph, n_)
+        if not flag:
             k2o_logger().warning(
                 "node {} of type {} cannot be converted, fall back to tf2onnx".format(n_.name, n_.type))
             return False
@@ -309,7 +328,7 @@ def _on_parsing_tf_nodes(nodelist, varset):
 
 
 def _on_parsing_tf_subgraph(graph, node_list, varset):
-    if _check_tfnode_converter_availability(node_list):
+    if _check_tfnodes_converter_availability(graph, node_list):
         _on_parsing_tf_nodes(node_list, varset)
         return
 
@@ -782,21 +801,24 @@ def parse_graph(topo, graph, target_opset, output_names, keras_node_dict):
     # ... the model input names are identical to the original Keras model.
     for idx_ in range(len(topo.raw_model.model.inputs)):
         op = top_level.declare_local_operator(TYPES.Identity)
-        input_ts = topo.raw_model.model.inputs[idx_]
+        idx_key = idx_
+        if isinstance(topo.raw_model.model.inputs, dict):
+            idx_key = list(topo.raw_model.model.inputs.keys())[idx_]
+        input_ts = topo.raw_model.model.inputs[idx_key]
         var_type = _adjust_input_batch_size(infer_variable_type(input_ts, target_opset))
         str_value = input_ts.name
         var0 = None
         if hasattr(topo.raw_model.model, 'input_names'):
             str_value = topo.raw_model.model.input_names[idx_]
-        elif topo.raw_model.model.inputs[idx_].name.endswith(':0'):
-            str_value = topo.raw_model.model.inputs[idx_].name[:-2]
+        elif input_ts.name.endswith(':0'):
+            str_value = input_ts.name[:-2]
         else:
             # if there is no difference between input tensor name and model input name,
             # skip it.
             var0 = top_level.get_local_variable_or_declare_one(str_value, var_type)
         if not var0:
             var0 = top_level.get_local_variable_or_declare_one(str_value, var_type)
-            var1 = top_level.get_local_variable_or_declare_one(topo.raw_model.model.inputs[idx_].name, var_type)
+            var1 = top_level.get_local_variable_or_declare_one(input_ts.name, var_type)
             op.add_input(var0)
             op.add_output(var1)
         topo.raw_model.add_input_name(str_value)
