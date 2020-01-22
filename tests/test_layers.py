@@ -77,6 +77,10 @@ if not (is_keras_older_than("2.2.4") or is_tf_keras):
 class TestKerasTF2ONNX(unittest.TestCase):
 
     def setUp(self):
+        try:
+            K.tensorflow_backend._get_available_gpus()
+        except AttributeError:
+            K.tensorflow_backend._LOCAL_DEVICES = []
         self.model_files = []
 
     def tearDown(self):
