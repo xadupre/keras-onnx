@@ -11,7 +11,7 @@ import numpy as np
 import onnxruntime
 from keras2onnx.proto.tfcompat import is_tf2, tensorflow as tf
 from keras2onnx.proto import (keras, is_tf_keras,
-                              get_opset_number_from_onnx, is_tensorflow_later_than,
+                              get_opset_number_from_onnx, is_tensorflow_older_than, is_tensorflow_later_than,
                               is_keras_older_than, is_keras_later_than)
 from test_utils import run_onnx_runtime
 
@@ -185,6 +185,17 @@ class TestKerasTF2ONNX(unittest.TestCase):
             data2 = np.random.rand(*batch_data2_shape).astype(np.float32)
             expected = model.predict([data1, data2])
             self.assertTrue(run_onnx_runtime('onnx_concat', onnx_model, [data1, data2], expected, self.model_files))
+
+    def test_depthwise_conv2d(self):
+        model = Sequential()
+        model.add(InputLayer(input_shape=(8, 8, 2)))
+        model.add(keras.layers.DepthwiseConv2D(
+            kernel_size=(3, 3), strides=(1, 1), padding="VALID",
+            data_format='channels_last'))
+        onnx_model = keras2onnx.convert_keras(model, 'test_depthwise_conv2d')
+        data = np.random.rand(3, 8, 8, 2).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(run_onnx_runtime('onnx_depthwise_conv2d', onnx_model, data, expected, self.model_files))
 
     def test_tf_expand_dims(self):
         for dim in [0, 1, -1]:
@@ -491,6 +502,20 @@ class TestKerasTF2ONNX(unittest.TestCase):
             expected = model.predict(data)
             self.assertTrue(run_onnx_runtime('onnx_tf_softmax', onnx_model, data, expected, self.model_files))
 
+    @unittest.skipIf(is_tensorflow_older_than('1.14.0'),
+                     "dilations in tf.nn.depthwise_conv2d not supported.")
+    def test_tf_space_to_batch_nd(self):
+        model = Sequential()
+        filter_value = np.random.rand(3, 3, 2, 2).astype(np.float32)
+        filter_constant = tf.constant(filter_value.tolist(), dtype=tf.float32)
+        model.add(Lambda(lambda x: tf.nn.depthwise_conv2d(
+            x, filter=filter_constant, strides=(1, 1, 1, 1), padding="VALID",
+            data_format='NHWC', dilations=(2, 2)), input_shape=(8, 8, 2)))
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_space_to_batch_nd')
+        data = np.random.rand(3, 8, 8, 2).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(run_onnx_runtime('onnx_tf_space_to_batch_nd', onnx_model, data, expected, self.model_files))
+
     def test_tf_splitv(self):
         def my_func_1(x):
             return tf.split(x, [4, 15, 11], 2)[0]
@@ -501,6 +526,14 @@ class TestKerasTF2ONNX(unittest.TestCase):
         data = np.random.rand(2, 5, 30).astype(np.float32)
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_splitv', onnx_model, data, expected, self.model_files))
+
+    def test_tf_square(self):
+        model = Sequential()
+        model.add(Lambda(lambda x: x + tf.square(x), input_shape=[2, 3, 5]))
+        onnx_model = keras2onnx.convert_keras(model, 'test_tf_square')
+        data = np.random.rand(3, 2, 3, 5).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(run_onnx_runtime('onnx_tf_square', onnx_model, data, expected, self.model_files))
 
     def test_tf_squeeze(self):
         for func_ in [lambda x: tf.squeeze(x, [1]), lambda x: tf.squeeze(x), lambda x: tf.squeeze(x, [-2])]:
@@ -719,6 +752,20 @@ class TestKerasTF2ONNX(unittest.TestCase):
         data = [self.asarray(1.2, 2.4, -2, 1), self.asarray(-1, -2, 0, 1, 2), self.asarray(0.5, 1.5, -3.14159)]
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_dense_add', onnx_model, data, expected, self.model_files))
+
+    @unittest.skipIf(is_tf2, "const is not initialized this way for tf2")
+    def test_conv_add(self):
+        input1 = Input(shape=(10, 10, 1))
+        x1 = Conv2D(32, strides=(2, 2), kernel_size=3,
+                    bias_initializer=keras.initializers.RandomNormal(mean=0.0, stddev=0.05, seed=None))(input1)
+        input2 = Input(tensor = tf.constant(np.random.rand(1, 32).astype(np.float32)))
+        added = Add()([x1, input2])
+        model = keras.models.Model(inputs=[input1, input2], outputs=added)
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        data = [np.random.rand(1, 10, 10, 1).astype(np.float32)]
+        expected = model.predict(data)
+        data += [np.random.rand(1, 32).astype(np.float32)]
+        self.assertTrue(run_onnx_runtime('onnx_conv_add', onnx_model, data, expected, self.model_files))
 
     def test_dense_softmax(self):
         data = self.asarray(1, 2, 3, 4)
@@ -1759,6 +1806,51 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
         onnx_model = keras2onnx.convert_keras(model, model.name)
         x = np.random.uniform(100, 999, size=(2, 3, 5)).astype(np.float32)
+        expected = model.predict(x)
+        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+    @unittest.skipIf(is_tf2 and is_tf_keras, 'TODO')
+    def test_masking_bias(self):
+        for rnn_class in [LSTM, GRU, SimpleRNN]:
+
+            timesteps, features = (3, 5)
+            model = Sequential([
+                keras.layers.Masking(mask_value=0., input_shape=(timesteps, features)),
+                rnn_class(8, return_state=False, return_sequences=False, use_bias=True, name='rnn')
+            ])
+
+            x = np.random.uniform(100, 999, size=(2, 3, 5)).astype(np.float32)
+            # Fill one of the entries with all zeros except the first timestep
+            x[1, 1:, :] = 0
+
+            # Test with the default bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+            # Set bias values to random floats
+            rnn_layer = model.get_layer('rnn')
+            weights = rnn_layer.get_weights()
+            weights[2] = np.random.uniform(size=weights[2].shape)
+            rnn_layer.set_weights(weights)
+
+            # Test with random bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+    @unittest.skipIf(is_tf2 and is_tf_keras, 'TODO')
+    def test_masking_value(self):
+        timesteps, features = (3, 5)
+        mask_value = 5.
+        model = Sequential([
+            keras.layers.Masking(mask_value=mask_value, input_shape=(timesteps, features)),
+            LSTM(8, return_state=False, return_sequences=False)
+        ])
+
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        x = np.random.uniform(100, 999, size=(2, 3, 5)).astype(np.float32)
+        x[1, :, :] = mask_value
         expected = model.predict(x)
         self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 

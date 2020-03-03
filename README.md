@@ -20,7 +20,7 @@ keras2onnx has been tested on **Python 3.5, 3.6, and 3.7**, with **tensorflow 1.
 You can install latest release of Keras2ONNX from PyPi:
 
 ```
-pip install keras-onnx
+pip install keras2onnx
 ```
 or install from source:
 
@@ -29,7 +29,7 @@ pip install git+https://github.com/microsoft/onnxconverter-common
 pip install git+https://github.com/onnx/keras-onnx
 ```
 Before running the converter, please notice that tensorflow has to be installed in your python environment,
-you can choose **tensorflow** package(CPU version) or **tensorflow-gpu**(GPU version)
+you can choose **tensorflow**/**tensorflow-cpu** package(CPU version) or **tensorflow-gpu**(GPU version)
 
 # Notes
 Keras2ONNX supports the new Keras subclassing model which was introduced in tensorflow 2.0 since the version **1.6.5**. Some typical subclassing models like [huggingface/transformers](https://github.com/huggingface/transformers) have been converted into ONNX and validated by ONNXRuntime.<br>
