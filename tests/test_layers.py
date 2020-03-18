@@ -189,6 +189,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_bias_add', onnx_model, data, expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_tf_concat(self):
         def my_func_1(x):
             return tf.concat([x[0], x[1]], 1)
@@ -843,8 +845,6 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_max(self):
         self.mergelayer_helper(Maximum, [1, -2, 3], [3, 1, 1])
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
     def test_concat(self):
         self.mergelayer_helper(lambda: Concatenate(), [1, 2, 3], [4, 5, 6, 7])
         self.mergelayer_helper(lambda: Concatenate(), [1, 2, 3], [4, 5, 6, 7])
