@@ -958,8 +958,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) >= StrictVersion("1.7"),
-                     reason="Tensor lstm_1/while:0 already processed")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     @unittest.skipIf(StrictVersion(onnxruntime.__version__) <= StrictVersion("1.2.0"),
                      "Failing for this verions of the runtime.")
     def test_conv3d_transpose(self):
@@ -1386,8 +1386,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             self.assertTrue(
                 run_onnx_runtime('test_batch_normalization_2_4d', onnx_model, [data], expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) >= StrictVersion("1.7"),
-                     reason="Tensor lstm_1/while:0 already processed")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_simpleRNN(self):
         K.clear_session()
         inputs1 = keras.Input(shape=(3, 1))
@@ -1456,8 +1456,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected,
                                              self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) >= StrictVersion("1.7"),
-                     reason="Tensor lstm_1/while:0 already processed")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_LSTM(self):
         inputs1 = keras.Input(shape=(3, 5))
         data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
@@ -1470,7 +1470,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
                 expected = model.predict(data)
                 self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) >= StrictVersion("1.7"),
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
                      reason="Tensor lstm_1/while:0 already processed")
     def test_LSTM_with_bias(self):
         inputs1 = keras.Input(shape=(1, 1))
