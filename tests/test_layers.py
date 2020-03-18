@@ -369,6 +369,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict([data_1, data_2])
         self.assertTrue(run_onnx_runtime('onnx_range_2', onnx_model, [data_1, data_2], expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_tf_compare_equal(self):
         for tf_op_ in [tf.not_equal, tf.less_equal, tf.greater_equal]:
             input1_shape = [[3], [3]]
