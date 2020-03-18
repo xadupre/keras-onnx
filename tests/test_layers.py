@@ -77,7 +77,7 @@ def keras2onnx_convert_keras(*args, **kwargs):
     if 'target_opset' not in kwargs:
         kwargs = kwargs.copy()
         kwargs['target_opset'] = 11
-    keras2onnx.convert_keras(*args, **kwargs)
+    return keras2onnx.convert_keras(*args, **kwargs)
 
 
 class TestKerasTF2ONNX(unittest.TestCase):
