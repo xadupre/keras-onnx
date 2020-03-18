@@ -276,6 +276,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_tf_gather', onnx_model, data, expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_tf_maximum_minimum(self):
         input1_shape_list = [(2, 3), (2, 3)]
         input2_shape_list = [(2, 3), (2, 1)]
