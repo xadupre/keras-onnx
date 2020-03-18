@@ -103,6 +103,21 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_lambda', onnx_model, data, expected, self.model_files))
 
+    def test_tf_addn(self):
+        input1 = Input(shape=(5, 3, 4), dtype=tf.float32)
+        input2 = Input(shape=(5, 3, 4), dtype=tf.float32)
+        sum = Lambda(tf.add_n)([input1, input2])
+        model = keras.models.Model(inputs=[input1, input2], outputs=sum)
+
+        onnx_model = keras2onnx.convert_keras(model, 'tf_add_n')
+        batch_data1_shape = (2, 5, 3, 4)
+        batch_data2_shape = (2, 5, 3, 4)
+        data1 = np.random.rand(*batch_data1_shape).astype(np.float32)
+        data2 = np.random.rand(*batch_data2_shape).astype(np.float32)
+        expected = model.predict([data1, data2])
+        self.assertTrue(
+            run_onnx_runtime('tf_add_n', onnx_model, [data1, data2], expected, self.model_files))
+
     def test_tf_conv(self):
         model = Sequential()
         k = tf.constant(np.random.normal(loc=0.0, scale=1.0, size=(1, 2, 3, 5)).astype(np.float32))
@@ -1832,6 +1847,38 @@ class TestKerasTF2ONNX(unittest.TestCase):
             rnn_layer = model.get_layer('rnn')
             weights = rnn_layer.get_weights()
             weights[2] = np.random.uniform(size=weights[2].shape)
+            rnn_layer.set_weights(weights)
+
+            # Test with random bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+    @unittest.skipIf((is_tf2 and is_tf_keras) or get_opset_number_from_onnx() < 9, 'TODO')
+    def test_masking_bias_bidirectional(self):
+        # TODO: Support GRU and SimpleRNN
+        for rnn_class in [LSTM]:
+
+            timesteps, features = (3, 5)
+            model = Sequential([
+                keras.layers.Masking(mask_value=0., input_shape=(timesteps, features)),
+                Bidirectional(rnn_class(8, return_state=False, return_sequences=False, use_bias=True), name='bi')
+            ])
+
+            x = np.random.uniform(100, 999, size=(2, 3, 5)).astype(np.float32)
+            # Fill one of the entries with all zeros except the first timestep
+            x[1, 1:, :] = 0
+
+            # Test with the default bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+            # Set bias values to random floats
+            rnn_layer = model.get_layer('bi')
+            weights = rnn_layer.get_weights()
+            weights[2] = np.random.uniform(size=weights[2].shape)
+            weights[5] = weights[2]
             rnn_layer.set_weights(weights)
 
             # Test with random bias
