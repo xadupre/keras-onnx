@@ -843,6 +843,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
     def test_max(self):
         self.mergelayer_helper(Maximum, [1, -2, 3], [3, 1, 1])
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
+                     reason="issue")
     def test_concat(self):
         self.mergelayer_helper(lambda: Concatenate(), [1, 2, 3], [4, 5, 6, 7])
         self.mergelayer_helper(lambda: Concatenate(), [1, 2, 3], [4, 5, 6, 7])
