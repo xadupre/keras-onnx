@@ -1374,6 +1374,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
             model = Sequential()
             model.add(InputLayer(input_shape=(input_dim_1, input_dim_2)))
+            if axis == -1:
+                model.add(Conv1D(32, strides=(2,), kernel_size=3))
             model.add(BatchNormalization(axis=axis))
             model.add(Dense(5))
             data = np.random.randn(batch_size, input_dim_1, input_dim_2).astype(np.float32)
@@ -1384,6 +1386,8 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
             model = Sequential()
             model.add(InputLayer(input_shape=(input_dim_1, input_dim_2, input_dim_3)))
+            if axis == -1:
+                model.add(Conv2D(32, strides=(2, 2), kernel_size=3))
             model.add(BatchNormalization(axis=axis))
             model.add(Dense(5))
             data = np.random.randn(batch_size, input_dim_1, input_dim_2, input_dim_3).astype(np.float32)
@@ -1556,58 +1560,74 @@ class TestKerasTF2ONNX(unittest.TestCase):
         op_version = modified_get_opset_number_from_onnx()
         batch_list = [1, 4] if op_version >= 9 else [1]
 
-        for return_sequences in [True, False]:
-            model = keras.Sequential()
-            model.add(Bidirectional(LSTM(7, return_sequences=return_sequences),
-                                    input_shape=(5, 10)))
-            model.add(Dense(5))
-            model.add(Activation('softmax'))
-            model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
-            onnx_model = keras2onnx_convert_keras(model, 'test', target_opset=op_version)
-            for batch in batch_list:
-                data = np.random.rand(batch, sequence_len, input_dim).astype(np.float32)
-                expected = model.predict(data)
-                self.assertTrue(run_onnx_runtime('bidirectional', onnx_model, data, expected, self.model_files))
+        rnn_classes = [SimpleRNN, GRU, LSTM]
 
-        for merge_mode in ['concat', None]:
+        for rnn_class in rnn_classes:
             for return_sequences in [True, False]:
-                sub_input1 = Input(shape=(sequence_len, input_dim))
-                sub_mapped1 = Bidirectional(LSTM(7, return_sequences=return_sequences),
-                                            input_shape=(5, 10), merge_mode=merge_mode)(sub_input1)
-                keras_model = keras.Model(inputs=sub_input1, outputs=sub_mapped1)
-                onnx_model = keras2onnx_convert_keras(keras_model, 'test_2', target_opset=op_version)
+                model = keras.Sequential()
+                model.add(Bidirectional(rnn_class(7, return_sequences=return_sequences),
+                                        input_shape=(5, 10)))
+                model.add(Dense(5))
+                model.add(Activation('softmax'))
+                model.compile(loss='categorical_crossentropy', optimizer='rmsprop')
+                onnx_model = keras2onnx.convert_keras(model, 'test', target_opset=op_version)
                 for batch in batch_list:
                     data = np.random.rand(batch, sequence_len, input_dim).astype(np.float32)
-                    expected = keras_model.predict(data)
+                    expected = model.predict(data)
                     self.assertTrue(run_onnx_runtime('bidirectional', onnx_model, data, expected, self.model_files))
 
+            for merge_mode in ['concat', None]:
+                for return_sequences in [True, False]:
+                    sub_input1 = Input(shape=(sequence_len, input_dim))
+                    sub_mapped1 = Bidirectional(rnn_class(7, return_sequences=return_sequences),
+                                                input_shape=(5, 10), merge_mode=merge_mode)(sub_input1)
+                    keras_model = keras.Model(inputs=sub_input1, outputs=sub_mapped1)
+                    onnx_model = keras2onnx.convert_keras(keras_model, 'test_2', target_opset=op_version)
+                    for batch in batch_list:
+                        data = np.random.rand(batch, sequence_len, input_dim).astype(np.float32)
+                        expected = keras_model.predict(data)
+                        self.assertTrue(run_onnx_runtime('bidirectional', onnx_model, data, expected, self.model_files))
+
     def test_Bidirectional_with_bias(self):
-        model = keras.Sequential()
-        model.add(Bidirectional(LSTM(1, return_sequences=False),
-                                input_shape=(1, 1)))
-        # Set weights(kernel, recurrent_kernel, bias) for forward layer followed by the backward layer
-        model.set_weights(
-            (np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4]),
-             np.array([[1, 2, 3, 4]]), np.array([[5, 6, 7, 8]]), np.array([1, 2, 3, 4])))
-        onnx_model = keras2onnx_convert_keras(model, 'test')
-        data = np.random.rand(1, 1).astype(np.float32).reshape((1, 1, 1))
-        expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime('bidirectional', onnx_model, data, expected, self.model_files))
+        for rnn_class in [SimpleRNN, GRU, LSTM]:
+            model = keras.Sequential()
+            model.add(Bidirectional(rnn_class(4, return_sequences=False),
+                                    input_shape=(3, 5), name='bi'))
+
+            x = np.random.uniform(100, 999, size=(2, 3, 5)).astype(np.float32)
+
+            # Test with the default bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+
+            # Set bias values to random floats
+            rnn_layer = model.get_layer('bi')
+            weights = rnn_layer.get_weights()
+            weights[2] = np.random.uniform(size=weights[2].shape)
+            weights[5] = weights[2]
+            rnn_layer.set_weights(weights)
+
+            # Test with random bias
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
     # Bidirectional LSTM with seq_length = None
     @unittest.skipIf(modified_get_opset_number_from_onnx() < 9,
                      "None seq_length Bidirectional LSTM is not supported before opset 9.")
     def test_Bidirectional_seqlen_none(self):
-        model = Sequential()
-        model.add(Embedding(39, 128))
-        model.add(Bidirectional(LSTM(256, input_shape=(None, 32), return_sequences=True)))
-        model.add(Dense(44))
+        for rnn_class in [SimpleRNN, GRU, LSTM]:
+            model = Sequential()
+            model.add(Embedding(39, 128))
+            model.add(Bidirectional(rnn_class(256, input_shape=(None, 32), return_sequences=True)))
+            model.add(Dense(44))
 
-        onnx_model = keras2onnx_convert_keras(model, model.name)
-        for batch in [1, 4]:
-            x = np.random.rand(batch, 50).astype(np.float32)
-            expected = model.predict(x)
-            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            for batch in [1, 4]:
+                x = np.random.rand(batch, 50).astype(np.float32)
+                expected = model.predict(x)
+                self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
     def test_seq_dynamic_batch_size(self):
         K.clear_session()
@@ -1882,8 +1902,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
 
     @unittest.skipIf((is_tf2 and is_tf_keras) or modified_get_opset_number_from_onnx() < 9, 'TODO')
     def test_masking_bias_bidirectional(self):
-        # TODO: Support GRU and SimpleRNN
-        for rnn_class in [LSTM]:
+        for rnn_class in [SimpleRNN, GRU, LSTM]:
 
             timesteps, features = (3, 5)
             model = Sequential([
@@ -2035,42 +2054,38 @@ class TestKerasTF2ONNX(unittest.TestCase):
         input_shape = [700, 420, 1]
         num_classes = 10
 
-        for learning in [True, False]:
-            if learning:
-                K.set_learning_phase(0)
+        image_input = Input(shape=input_shape, name='image_input')
 
-            image_input = Input(shape=input_shape, name='image_input')
+        model = Sequential()  # 28, 28, 1
+        model.add(Conv2D(32, kernel_size=(3, 3), activation='relu',
+                         input_shape=input_shape, padding='valid'))  # 28, 28, 1
+        model.add(Conv2D(64, (3, 3), activation='relu', padding='valid'))  # 28, 28, 1
+        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), padding="valid"))  # 14, 14, 1
+        model.add(Dropout(0.25))
+        model.add(Conv2D(128, kernel_size=(12, 12), strides=(14, 14), padding="valid", activation='relu'))
+        model.add(Dropout(0.5))
 
-            model = Sequential()  # 28, 28, 1
-            model.add(Conv2D(32, kernel_size=(3, 3), activation='relu',
-                             input_shape=input_shape, padding='valid'))  # 28, 28, 1
-            model.add(Conv2D(64, (3, 3), activation='relu', padding='valid'))  # 28, 28, 1
-            model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2), padding="valid"))  # 14, 14, 1
-            model.add(Dropout(0.25))
-            model.add(Conv2D(128, kernel_size=(12, 12), strides=(14, 14), padding="valid", activation='relu'))
-            model.add(Dropout(0.5))
+        features = model(image_input)
 
-            features = model(image_input)
+        outputs = []
+        for _ in range(3):
+            output1 = Dense(num_classes, activation="softmax")(
+                Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+            output2 = Dense(1, activation="sigmoid")(
+                Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+            output3 = Dense(2, activation="tanh")(
+                Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+            output4 = Dense(2, activation="tanh")(
+                Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
+            outputs += [output1, output2, output3, output4]
 
-            outputs = []
-            for _ in range(3):
-                output1 = Dense(num_classes, activation="softmax")(
-                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
-                output2 = Dense(1, activation="sigmoid")(
-                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
-                output3 = Dense(2, activation="tanh")(
-                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
-                output4 = Dense(2, activation="tanh")(
-                    Dense(64, activation="relu")(Dense(128, activation="relu")(features)))
-                outputs += [output1, output2, output3, output4]
-
-            output = Concatenate(name="output")(outputs)
-            output = IdentityLayer()(output)
-            model1 = Model(image_input, output)
-            onnx_model = keras2onnx_convert_keras(model1, model1.name)
-            x = np.random.rand(2, 700, 420, 1).astype(np.float32)
-            expected = model1.predict(x)
-            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
+        output = Concatenate(name="output")(outputs)
+        output = IdentityLayer()(output)
+        model1 = Model(image_input, output)
+        onnx_model = keras2onnx.convert_keras(model1, model1.name)
+        x = np.random.rand(2, 700, 420, 1).astype(np.float32)
+        expected = model1.predict(x)
+        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
 
 if __name__ == "__main__":
