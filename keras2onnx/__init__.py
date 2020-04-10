@@ -7,7 +7,7 @@
 keras2onnx
 This package converts keras models into ONNX for use with any inference engine supporting ONNX
 """
-__version__ = "1.7.0.91"
+__version__ = "1.7.91"
 __author__ = "Microsoft Corporation"
 __producer__ = "keras2onnx"
 
