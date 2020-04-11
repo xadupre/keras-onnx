@@ -6,9 +6,11 @@
 import os
 import unittest
 from distutils.version import StrictVersion
-import keras2onnx
 import numpy as np
+import onnxruntime
+import keras2onnx
 from onnxconverter_common.onnx_ex import get_maximum_opset_supported
+from keras2onnx import __version__ as k2onnx_ver
 from keras2onnx.proto.tfcompat import is_tf2, tensorflow as tf
 from keras2onnx.proto import (keras, is_tf_keras,
                               is_tensorflow_older_than, is_tensorflow_later_than,
