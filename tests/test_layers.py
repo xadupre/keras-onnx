@@ -190,8 +190,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_bias_add', onnx_model, data, expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_tf_concat(self):
         def my_func_1(x):
             return tf.concat([x[0], x[1]], 1)
@@ -277,8 +276,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict(data)
         self.assertTrue(run_onnx_runtime('onnx_tf_gather', onnx_model, data, expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_tf_maximum_minimum(self):
         input1_shape_list = [(2, 3), (2, 3)]
         input2_shape_list = [(2, 3), (2, 1)]
@@ -374,8 +372,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = model.predict([data_1, data_2])
         self.assertTrue(run_onnx_runtime('onnx_range_2', onnx_model, [data_1, data_2], expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_tf_compare_equal(self):
         for tf_op_ in [tf.not_equal, tf.less_equal, tf.greater_equal]:
             input1_shape = [[3], [3]]
@@ -965,8 +962,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         self._conv_helper(Conv3DTranspose, input_channels, output_channels, kernel_size, strides,
                           inputs_dims, activation, rtol, atol, bias, channels_first, padding)
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     @unittest.skipIf(StrictVersion(onnxruntime.__version__) <= StrictVersion("1.2.0"),
                      "Failing for this verions of the runtime.")
     def test_conv3d_transpose(self):
@@ -1397,8 +1393,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             self.assertTrue(
                 run_onnx_runtime('test_batch_normalization_2_4d', onnx_model, [data], expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_simpleRNN(self):
         K.clear_session()
         inputs1 = keras.Input(shape=(3, 1))
@@ -1467,8 +1462,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected,
                                              self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="issue")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_LSTM(self):
         inputs1 = keras.Input(shape=(3, 5))
         data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
@@ -1481,8 +1475,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
                 expected = model.predict(data)
                 self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
 
-    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.7"),
-                     reason="Tensor lstm_1/while:0 already processed")
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_LSTM_with_bias(self):
         inputs1 = keras.Input(shape=(1, 1))
         cls = LSTM(units=1, return_state=True, return_sequences=True)
@@ -1614,6 +1607,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
             onnx_model = keras2onnx.convert_keras(model, model.name)
             self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, x, expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     def test_Bidirectional_with_initial_states(self):
         for rnn_class in [SimpleRNN, GRU, LSTM]:
             input1 = Input(shape=(None, 5))
