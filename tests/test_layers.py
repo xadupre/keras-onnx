@@ -1805,6 +1805,7 @@ class TestKerasTF2ONNX(unittest.TestCase):
         expected = keras_model.predict(x)
         self.assertTrue(run_onnx_runtime('recursive_and_shared', onnx_model, x, expected, self.model_files))
 
+    @unittest.skipIf(StrictVersion(k2onnx_ver) < StrictVersion("1.8"), reason="issue")
     @unittest.skipIf(is_keras_older_than("2.2.4"),
                      "Low keras version is not supported.")
     def test_shared_model_2(self):
