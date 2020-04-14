@@ -14,5 +14,9 @@ Converters
 
 .. autofunction:: keras2onnx.convert_keras
 
-.. autofunction:: keras2onnx.convert_keras_tf
+Helpers
+=======
 
+.. autofunction:: keras2onnx.build_io_names_tf2onnx
+
+.. autofunction:: keras2onnx.export_tf_frozen_graph
