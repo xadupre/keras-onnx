@@ -5,14 +5,8 @@
 #
 # Configuration file for the Sphinx documentation builder.
 
-import os
-import sys
-import shutil
-import sphinx_gallery.gen_gallery
 import keras2onnx
-import onnxruntime
-import sphinx_keras2onnx_extension
-import sphinx_modern_theme_modified
+import sphinx_readable_theme
 
 
 # -- Project information -----------------------------------------------------
