@@ -57,6 +57,20 @@ def _get_layer_name(reserved, ts_or_op):
     return ts_or_op.rsplit('/', 1)[0]
 
 
+def _get_input_mask(layer):
+    # type: (keras.models.Layer) -> []
+    if hasattr(layer, 'input_mask') and layer.input_mask is not None:
+        return layer.input_mask if isinstance(layer.input_mask, (list, tuple)) else [layer.input_mask]
+    return []
+
+
+def _get_output_mask(layer):
+    # type: (keras.models.Layer) -> []
+    if hasattr(layer, 'output_mask') and layer.output_mask is not None:
+        return layer.output_mask if isinstance(layer.output_mask, (list, tuple)) else [layer.output_mask]
+    return []
+
+
 class LayerInfo(object):
     def __init__(self, _ly):
         self.layer = _ly
@@ -102,6 +116,7 @@ class LayerInfo(object):
             next_itr.clear()
             for n_ in visited:
                 for i_ in n_.inputs:
+                    # in layer_spec model, the layer name will be checked
                     if fstr_list is not None and i_.op.name.find(layer_name) == -1:
                         continue
                     if i_.op in visited or i_.op not in inference_nodeset:
@@ -160,33 +175,25 @@ def _layer_name_dict(tf_utils, layer, prefix, parent=None):
     return output_dict
 
 
-def _to_tf_ops(layer_name, graph, fstr):
+def _to_tf_ops(layer_name, fstr, ops_table):
     ops = []
     op_name = fstr.format(layer_name) if fstr is not None else None
     if op_name is None:
         return ops
 
-    try:
-        ops[0:] = [graph.get_operation_by_name(op_name)]
-        idx = 1
-        if not re.match(r".+_\d+", layer_name):  # if layer name already numbered, skipped then.
-            while True:  # break out by exception.
-                op_name = fstr.format("%s_%d" % (layer_name, idx))
-                ops[idx:] = [graph.get_operation_by_name(op_name)]
-                idx += 1
-    except KeyError:
-        pass
+    if re.match(r".+_\d+$", layer_name):  # if layer name already numbered, skipped then.
+        return ops
+
+    idx = 0
+    while True:
+        op_name = fstr.format("%s_%d" % (layer_name, idx + 1))
+        if op_name in ops_table:
+            ops.append(ops_table[op_name])
+        else:
+            break
+        idx += 1
 
     return ops
-
-
-def _advance_output_node_if_successor(graph, layer, output):
-    for op_ in graph.get_operations():
-        if op_.name.find(layer) == 0:
-            if output in [ts_.op.name for ts_ in op_.inputs]:
-                return op_.name
-
-    return output
 
 
 def build_layer_outputs(model, graph, outputs):
@@ -196,6 +203,17 @@ def build_layer_outputs(model, graph, outputs):
     output_dict = {}
     layer_dict = _layer_name_dict(tf_utils, model, model.name)
 
+    ops_table = {op_.name: op_ for op_ in graph.get_operations()}
+
+    def add_output_node(graph, op, fx_list, layer_name):
+        output_node_name = op.name
+        if len(fx_list) > 1:  # if there is no output node function.
+            # fx_[1] is output node redirect function.
+            output_node_name = fx_list[1](lobj, op)
+        assert graph.get_operation_by_name(output_node_name) is not None, "Parsing layer({}) failed.".format(lobj)
+        if output_node_name not in output_dict:  # if there is already a same kind of layer, not overwrite it.
+            output_dict[output_node_name] = layer_dict[layer_name]
+
     for ln_, layer_info_ in layer_dict.items():
         lobj = layer_info_[0]
         fstr_list, fx_list = keras_layer_spec(type(lobj))
@@ -203,16 +221,21 @@ def build_layer_outputs(model, graph, outputs):
             continue
 
         for fstr_ in fstr_list:
-            for op_ in _to_tf_ops(ln_, graph, fstr_):
-                if len(fx_list) <= 1:
-                    output_dict[op_.name] = layer_dict[ln_]
-                else:
-                    # fx_[1] is output node redirect function.
-                    output_node = fx_list[1](lobj, op_)
-                    output_node = _advance_output_node_if_successor(graph, ln_, output_node)
-                    assert graph.get_operation_by_name(output_node) is not None, "Parsing layer({}) failed.".format(
-                        lobj)
-                    output_dict[output_node] = layer_dict[ln_]
+            op_name = fstr_.format(ln_)
+            if op_name not in ops_table:
+                continue
+            add_output_node(graph, ops_table[op_name], fx_list, ln_)
+
+    # now process the case when a layer was re-used several times in one model.
+    for ln_, layer_info_ in layer_dict.items():
+        lobj = layer_info_[0]
+        fstr_list, fx_list = keras_layer_spec(type(lobj))
+        if fstr_list is None:
+            continue
+
+        for fstr_ in fstr_list:
+            for op_ in _to_tf_ops(ln_, fstr_, ops_table):
+                add_output_node(graph, op_, fx_list, ln_)
 
     return output_dict
 
@@ -255,6 +278,10 @@ def extract_outputs_from_inbound_nodes(model):
                 if op_name not in output_dict:
                     output_dict[op_name] = (model, None)
 
+        for ts_ in _get_output_mask(model):
+            if ts_ is not None:
+                output_dict[ts_.op.name] = (model, model)
+
     return output_dict
 
 
@@ -269,63 +296,43 @@ def build_layer_output_from_model(model, output_dict, input_names, output_names)
         return graph
 
 
-# layer.input and layer_info.inputs are different for masking layer,
-# we rely on layer.inputs for this case.
-def _get_layer_endpoints(layer_endpoints, layer_info_end_points):
-    end_points = []
-    end_point_candidates = layer_endpoints if isinstance(layer_endpoints, list) else [layer_endpoints]
-    layer_info_end_points_name = [point.name for point in layer_info_end_points]
-    for end_point_ in end_point_candidates:
-        if end_point_.name in layer_info_end_points_name:
-            end_points.append(end_point_)
-    return end_points
-
-
 def on_parsing_keras_layer_v2(graph, layer_info, varset, prefix=None):
     layer = layer_info.layer
     node_list = layer_info.nodelist
     operator = varset.declare_local_operator(type(layer), raw_model=layer, op_name=layer.name)
     operator.nodelist = node_list
 
-    inputs = layer_info.inputs
-    outputs = layer_info.outputs
-    if hasattr(layer, 'input'):
-        input_candidates = layer.input if isinstance(layer.input, list) else [layer.input]
-        if len(input_candidates) != len(layer_info.inputs):
-            inputs = _get_layer_endpoints(layer.input, layer_info.inputs)
-            outputs = _get_layer_endpoints(layer.output, layer_info.outputs)
-
     if prefix is None:  # prefix is designed for the distinguish among the shared model instances.
         prefix = ''
 
-    for n_, o_ in enumerate(outputs):
-        oname = prefix + o_.name
-        k2o_logger().debug('output: ' + oname)
-        o1 = varset.get_local_variable_or_declare_one(oname, infer_variable_type(o_, varset.target_opset))
-        operator.add_output(o1)
+    input_masks = _get_input_mask(layer)
+    output_masks = _get_output_mask(layer)
+    for o_ in layer_info.outputs:
+        if o_ not in output_masks:  # the layer converter will handle output_mask by itself.
+            oname = prefix + o_.name
+            k2o_logger().debug('output: ' + oname)
+            o1 = varset.get_local_variable_or_declare_one(oname, infer_variable_type(o_, varset.target_opset))
+            operator.add_output(o1)
 
-    for i_ in inputs:
-        iname = prefix + i_.name
-        k2o_logger().debug('input : ' + iname)
-        var_type = adjust_input_batch_size(infer_variable_type(i_, varset.target_opset))
-        i0 = varset.get_local_variable_or_declare_one(iname, var_type)
-        operator.add_input(i0)
+    for i_ in layer_info.inputs:
+        if i_ not in input_masks:  # the layer converter will handle input_mask by itself.
+            iname = prefix + i_.name
+            k2o_logger().debug('input : ' + iname)
+            var_type = adjust_input_batch_size(infer_variable_type(i_, varset.target_opset))
+            i0 = varset.get_local_variable_or_declare_one(iname, var_type)
+            operator.add_input(i0)
 
-    if hasattr(layer, 'input_mask') and layer.input_mask is not None:
-        in_mask = layer.input_mask if isinstance(layer.input_mask, (list, tuple)) else [layer.input_mask]
-        for im_ in [m_ for m_ in in_mask if m_ is not None]:
-            mts_name = im_.name  # input mask in a shared model is not supported yet, why is it needed?
-            k2o_logger().debug('input mask: ' + mts_name)
-            mts_var = varset.get_local_variable_or_declare_one(mts_name, infer_variable_type(im_, varset.target_opset))
-            operator.add_input_mask(mts_var)
+    for om_ in [m_ for m_ in output_masks if m_ is not None]:
+        mts_name = prefix + om_.name
+        k2o_logger().debug('output mask: ' + mts_name)
+        mts_var = varset.get_local_variable_or_declare_one(mts_name, infer_variable_type(om_, varset.target_opset))
+        operator.add_output_mask(mts_var)
 
-    if hasattr(layer, 'output_mask') and layer.output_mask is not None:
-        out_mask = layer.output_mask if isinstance(layer.output_mask, (list, tuple)) else [layer.output_mask]
-        for om_ in [m_ for m_ in out_mask if m_ is not None]:
-            mts_name = prefix + om_.name
-            k2o_logger().debug('output mask: ' + mts_name)
-            mts_var = varset.get_local_variable_or_declare_one(mts_name, infer_variable_type(om_, varset.target_opset))
-            operator.add_output_mask(mts_var)
+    for im_ in [m_ for m_ in input_masks if m_ is not None]:
+        mts_name = im_.name  # input mask in a shared model is not supported yet, why is it needed?
+        k2o_logger().debug('input mask: ' + mts_name)
+        mts_var = varset.get_local_variable_or_declare_one(mts_name, infer_variable_type(im_, varset.target_opset))
+        operator.add_input_mask(mts_var)
 
     if hasattr(layer, 'mask_value') and layer.mask_value is not None:
         operator.mask_value = layer.mask_value
