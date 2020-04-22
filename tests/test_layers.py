@@ -17,6 +17,10 @@ from keras2onnx.proto.tfcompat import is_tf2, tensorflow as tf
 from keras2onnx.proto import (keras, is_tf_keras,
                               is_tensorflow_older_than, is_tensorflow_later_than,
                               is_keras_older_than, is_keras_later_than)
+try:
+    from keras2onnx import convert_keras as keras2onnx_convert_keras
+except ImportError:
+    from onnxmltools.convert import convert_keras as keras2onnx_convert_keras
 
 K = keras.backend
 Activation = keras.layers.Activation
