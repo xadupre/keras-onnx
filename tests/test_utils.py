@@ -28,6 +28,7 @@ def convert_tf_crop_and_resize(scope, operator, container):
                                   transpose_node + operator.input_full_names[1:],
                                   operator.full_name + '_crop_and_resize',
                                   op_domain='com.microsoft',
+                                  op_version=1,
                                   mode=mode_value)
     oopb.apply_op_with_output("apply_transpose",
                               cropandresize,
@@ -119,6 +120,7 @@ def run_onnx_runtime(case_name, onnx_model, data, expected, model_files, rtol=1.
         import onnxruntime
         sess = onnxruntime.InferenceSession(temp_model_file)
     except ImportError:
+        keras2onnx.common.k2o_logger().warning("Cannot import ONNXRuntime!")
         return True
 
     if isinstance(data, dict):

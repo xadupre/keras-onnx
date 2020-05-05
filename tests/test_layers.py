@@ -204,12 +204,13 @@ def test_tf_concat(runner):
         assert runner('onnx_concat', onnx_model, [data1, data2], expected)
 
 
-def test_depthwise_conv2d(runner):
+@pytest.mark.parametrize("use_bias", [True, False])
+def test_depthwise_conv2d(runner, use_bias):
     model = Sequential()
     model.add(InputLayer(input_shape=(8, 8, 2)))
     model.add(keras.layers.DepthwiseConv2D(
         kernel_size=(3, 3), strides=(1, 1), padding="VALID",
-        data_format='channels_last'))
+        data_format='channels_last', use_bias=use_bias))
     onnx_model = keras2onnx.convert_keras(model, 'test_depthwise_conv2d')
     data = np.random.rand(3, 8, 8, 2).astype(np.float32)
     expected = model.predict(data)
@@ -326,7 +327,6 @@ def test_tf_one_hot(runner):
     model = Sequential()
     model.add(Lambda(lambda x: my_func(x), input_shape=[3]))
     onnx_model = keras2onnx.convert_keras(model, 'test_tf_one_hot')
-    keras2onnx.save_model(onnx_model, 'one_hot.onnx')
     data = np.array([[0, 1, 2]]).astype(np.float32)
     expected = model.predict(data)
     assert runner('tf_one_hot', onnx_model, data, expected)
@@ -671,6 +671,15 @@ def test_tf_tile(runner):
     data = np.random.rand(3, 2, 2).astype(np.float32)
     expected = model.predict(data)
     assert runner('onnx_tile', onnx_model, data, expected)
+
+
+def test_tf_topk(runner):
+    model = Sequential()
+    model.add(Lambda(lambda x: tf.nn.top_k(x, k=2)[0], input_shape=[5, 5]))
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_topk')
+    data = np.random.rand(3, 5, 5).astype(np.float32)
+    expected = model.predict(data)
+    assert runner('onnx_topk', onnx_model, data, expected)
 
 
 def test_tf_transpose(runner):
@@ -1021,6 +1030,24 @@ def test_flatten(runner):
     data = np.array([[[1, 2], [3, 4], [5, 6]]]).astype(np.float32)
     expected = model.predict(data)
     assert runner('flatten', onnx_model, data, expected)
+
+
+def test_opt_push_transpose_unsqueeze(runner):
+    for input_shape_ in [(1, 5, 7), (1, 5)]:
+        model = keras.Sequential()
+        if len(input_shape_) == 3:
+            model.add(Conv2D(64, (3, 3),
+                             input_shape=input_shape_, padding='same', ))
+        else:
+            model.add(Conv1D(64, 3,
+                             input_shape=input_shape_, padding='same', ))
+        model.add(Lambda(lambda x: tf.squeeze(x, [1])))
+        model.add(Lambda(lambda x: tf.expand_dims(x, 1)))
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        batch_input_shape = (4,) + input_shape_
+        x = np.random.rand(*batch_input_shape).astype(np.float32)
+        expected = model.predict(x)
+        assert runner(onnx_model.graph.name, onnx_model, x, expected)
 
 
 def test_flatten2(runner):
@@ -1555,6 +1582,34 @@ def test_LSTM(runner):
             expected = model.predict(data)
             assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)),
+                    reason="keras LSTM does not have time_major attribute")
+def test_LSTM_time_major_return_seq_true(runner):
+    inputs1 = keras.Input(shape=(3, 5))
+    data = np.random.rand(1, 3, 5).astype(np.float32)
+    # Transpose input to be time major
+    input_transposed = tf.transpose(inputs1, perm=[1,0,2])
+    lstm1, state_h, state_c = LSTM(units=2, time_major=True, return_state=True,
+                                   return_sequences=True)(input_transposed)
+    lstm1_trans = tf.transpose(lstm1, perm=[1,0,2])
+    model = keras.Model(inputs=inputs1, outputs=[lstm1_trans, state_h, state_c])
+    onnx_model = keras2onnx.convert_keras(model, model.name)
+    expected = model.predict(data)
+    assert runner(onnx_model.graph.name, onnx_model, data, expected)
+
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)) ,
+                    reason="keras LSTM does not have time_major attribute")
+def test_LSTM_time_major_return_seq_false(runner):
+    inputs1 = keras.Input(shape=(3, 5))
+    data = np.random.rand(1, 3, 5).astype(np.float32)
+    # Transpose input to be time major
+    input_transposed = tf.transpose(inputs1, perm=[1,0,2])
+    lstm1, state_h, state_c = LSTM(units=2, time_major=True, return_state=True,
+                                   return_sequences=False)(input_transposed)
+    model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
+    onnx_model = keras2onnx.convert_keras(model, model.name)
+    expected = model.predict(data)
+    assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
 @pytest.mark.skip(reason="failure on debian")
 def test_LSTM_with_bias(runner):

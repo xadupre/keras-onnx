@@ -15,8 +15,10 @@ from .parser import parse_graph, parse_graph_modeless
 from .topology import Topology
 from .common.utils import set_logger_level, k2o_logger
 from .funcbook import set_converter
+from ._tf_utils import tsname_to_node
+from ._builtin import register_direct_tf_ops
 from ._parser_1x import build_opdict_from_keras
-from ._parse_tf import tsname_to_node, build_layer_output_from_model
+from ._parser_tf import build_layer_output_from_model
 
 
 def convert_keras(model, name=None, doc_string='', target_opset=None,
@@ -34,7 +36,7 @@ def convert_keras(model, name=None, doc_string='', target_opset=None,
     """
     if isinstance(model, tf.keras.Model) and not is_tf_keras:
         raise Exception("This is a tensorflow keras model, but keras standalone converter is used." +
-                        " Please set environment variable TF_KERAS = 1.")
+                        " Please set environment variable TF_KERAS = 1 before importing keras2onnx.")
 
     set_logger_level(logging.DEBUG if debug_mode else logging.INFO)
     if is_tf2:
@@ -59,6 +61,7 @@ def convert_keras(model, name=None, doc_string='', target_opset=None,
         output_names = [n.name for n in model.outputs]
 
     static_set_ke2onnx_converters(set_converter)
+    register_direct_tf_ops()
     dump_graph_into_tensorboard(tf_graph)
     topology = Topology(model, tf_graph,
                         target_opset=target_opset,

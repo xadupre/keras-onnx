@@ -11,11 +11,11 @@ from .proto.tfcompat import tensorflow as tf
 from .proto.tfcompat import is_tf2
 from .common import k2o_logger
 from .topology import Topology
-from .funcbook import get_converter
-from ._builtin import TYPES
-
-from ._parse_tf import (infer_variable_type, LayerInfo, is_placeholder_node,
-                        tsname_to_node, on_parsing_keras_layer_v2, adjust_input_batch_size as _adjust_input_batch_size)
+from .funcbook import get_converter, set_converter
+from ._consts import TYPES
+from ._tf_ops import pass_thru_converter
+from ._parser_tf import (infer_variable_type, LayerInfo, is_placeholder_node,
+                         tsname_to_node, on_parsing_keras_layer_v2, adjust_input_batch_size as _adjust_input_batch_size)
 from ._parser_1x import (extract_inbound_nodes,
                          list_input_tensors, list_input_mask, list_output_mask,
                          list_output_tensors, list_input_shapes, list_output_shapes, on_parsing_keras_layer)
@@ -294,38 +294,41 @@ def _check_tfnode_converter_availability(graph, node):
 
 
 def _check_tfnodes_converter_availability(graph, nodelist, debug_mode):
+    status = True
     for n_ in nodelist:
         if not _check_tfnode_converter_availability(graph, n_):
             k2o_logger().warning(
-                "The tf.op node {} of type {} cannot be converted".format(n_.name, n_.type))
-            if debug_mode:
-                continue
-            return False
+                "WARN: No corresponding ONNX op matches the tf.op node {} of type {}".format(n_.name, n_.type) +
+                "\n      The generated ONNX model needs run with the custom op supports.")
+            status = False
 
-    return True
+    return status
 
 
 def _on_parsing_tf_nodes(graph, nodelist, varset, debug_mode):
-    if not (_check_tfnodes_converter_availability(graph, nodelist, debug_mode) or debug_mode):
-        return
+    _check_tfnodes_converter_availability(graph, nodelist, debug_mode)
     for node_ in nodelist:
         k2o_logger().debug("Processing a tf node - %s" % node_.name)
         operator = varset.declare_local_operator(node_.type, raw_model=node_, op_name=node_.name)
 
         for o_ in node_.outputs:
             oname = o_.name
-            k2o_logger().debug('output: ' + oname)
+            k2o_logger().debug('\toutput: ' + oname)
             out0 = varset.get_local_variable_or_declare_one(oname, infer_variable_type(o_, varset.target_opset))
             operator.add_output(out0)
 
         for i_ in node_.inputs:
-            k2o_logger().debug('input : ' + i_.name)
+            k2o_logger().debug('\tinput : ' + i_.name)
             var_type = infer_variable_type(i_, varset.target_opset)
             i0 = varset.get_local_variable_or_declare_one(i_.name, var_type)
             operator.add_input(i0)
 
         cvt = get_converter(operator.type)
-        if cvt is not None and hasattr(cvt, 'shape_infer'):
+        if cvt is None:
+            assert isinstance(operator.type, str), \
+                "Only tf-op can be pass_thru conversion, type: {}".format(type(operator.type))
+            set_converter(operator.type, pass_thru_converter)
+        elif hasattr(cvt, 'shape_infer'):
             operator.shape_infer = cvt.shape_infer
 
 

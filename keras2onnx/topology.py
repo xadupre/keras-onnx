@@ -203,11 +203,51 @@ def _remove_unused_initializers(nodes, initializers):
     return adjusted_initializers
 
 
-def _blindly_converter_for_debug(scope, operator, container):
-    container.add_node(operator.type,
-                       operator.input_full_names,
-                       operator.output_full_names,
-                       name=operator.full_name)
+def _remove_unused_nodes(nodes, inputs, outputs):
+    nodes_input_set = set()
+    for n_ in nodes:
+        for input_name_ in n_.input:
+            nodes_input_set.add(input_name_)
+
+    input_dict = set([in_.name for in_ in inputs])
+    output_dict = {}
+    for nd_ in nodes:
+        output_dict.update({o_: nd_ for o_ in nd_.output})
+
+    nodes_to_keep = set()
+    node_inputs = [output_dict[ts_.name] for ts_ in outputs]
+    while node_inputs:
+        nd_ = node_inputs[0]
+        del node_inputs[0]
+        if id(nd_) in nodes_to_keep:
+            continue
+
+        nodes_to_keep.add(id(nd_))
+        for in_ in nd_.input:
+            if in_ in output_dict:
+                node_inputs.append(output_dict[in_])
+            else:
+                assert in_ == '' or in_ in input_dict
+
+    return [nd_ for nd_ in nodes if id(nd_) in nodes_to_keep]
+
+
+def _build_extra_inputs(container):
+    # When calling ModelComponentContainer's add_initializer(...), nothing is added into the input list.
+    # However, In ONNX, for target opset < 9, initializers should also be model's (GraphProto) inputs.
+    # Thus, we create ValueInfoProto objects from initializers (type: TensorProto) directly and then add them into model's input list.
+    extra_inputs = []  # ValueInfoProto list of the initializers
+    for tensor in container.initializers:
+        # Sometimes (especially when creating optional input values such as RNN's initial hidden state), an initializer
+        # is also one of the original model's input, so it has been added into the container's input list. If this is
+        # the case, we need to skip one iteration to avoid duplicated inputs.
+        if tensor.name in [value_info.name for value_info in container.inputs]:
+            continue
+
+        # Initializers are always tensors so we can just call make_tensor_value_info(...)
+        value_info = helper.make_tensor_value_info(tensor.name, tensor.data_type, tensor.dims)
+        extra_inputs.append(value_info)
+    return extra_inputs
 
 
 def convert_topology(topology, model_name, doc_string, target_opset, channel_first_inputs=None):
@@ -275,34 +315,18 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
         k2o_logger().debug("Converting the operator (%s): %s" % (operator.full_name, operator.type))
         cvt = get_converter(operator.type)
         if cvt is None:
-            if topology.debug_mode:
-                cvt = _blindly_converter_for_debug
-            else:
-                raise RuntimeError("Unexpected error on find the converter for op {}".format(operator.type))
+            raise RuntimeError("Unexpected error on find the converter for op {}".format(operator.type))
         cvt(scope, operator, container)
-
-    # When calling ModelComponentContainer's add_initializer(...), nothing is added into the input list.
-    # However, In ONNX, for target opset < 9, initializers should also be model's (GraphProto) inputs.
-    # Thus, we create ValueInfoProto objects from initializers (type: TensorProto) directly and then add them into model's input list.
-    extra_inputs = []  # ValueInfoProto list of the initializers
-    for tensor in container.initializers:
-        # Sometimes (especially when creating optional input values such as RNN's initial hidden state), an initializer
-        # is also one of the original model's input, so it has been added into the container's input list. If this is
-        # the case, we need to skip one iteration to avoid duplicated inputs.
-        if tensor.name in [value_info.name for value_info in container.inputs]:
-            continue
-
-        # Initializers are always tensors so we can just call make_tensor_value_info(...)
-        value_info = helper.make_tensor_value_info(tensor.name, tensor.data_type, tensor.dims)
-        extra_inputs.append(value_info)
 
     # enable the ONNX optimizations
     graph = None
-    nodes = container.nodes
+    extra_inputs = _build_extra_inputs(container)
+    nodes = _remove_unused_nodes(container.nodes, container.inputs + extra_inputs, container.outputs)
+
     if not topology.debug_mode:
         try:
             import onnxconverter_common
-            origin_node_number = len(container.nodes)
+            origin_node_number = len(nodes)
             if target_opset < 9:
                 nodes = onnxconverter_common.optimizer.optimize_onnx(nodes, nchw_inputs=nchw_inputs,
                                                                      inputs=container.inputs + extra_inputs,
@@ -317,7 +341,8 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
                                                                            model_name=model_name,
                                                                            target_opset=container.target_opset)
                 node_number = len(graph.node)
-            k2o_logger().info("The node number after optimization: {} -> {}".format(origin_node_number, node_number))
+            k2o_logger().info(
+                "The ONNX operator number change on the optimization: {} -> {}".format(origin_node_number, node_number))
         except ImportError:
             onnx_not_imported = 'onnxconverter_common is not imported,'
             if nchw_inputs:
@@ -326,7 +351,8 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
             k2o_logger().warning('{} so the convertor optimizer is not enabled.'.format(onnx_not_imported))
         except Exception as e:  # noqa
             # either optimizer issue or converter issue, we just let it go to diagnose the issue from the converted model.
-            k2o_logger().warning('There is an error({}) happened during optimizing on the converted model!'.format(type(e)))
+            k2o_logger().warning(
+                'There is an error({}) happened during optimizing on the converted model!'.format(type(e)))
             k2o_logger().warning(str(e))
             import traceback
             tb = traceback.format_exc()
@@ -335,8 +361,8 @@ def convert_topology(topology, model_name, doc_string, target_opset, channel_fir
     if graph is None:
         # Create a graph from its main components
         adjusted_initializers = _remove_unused_initializers(nodes, container.initializers)
-        adjusted_extra_inputs = _remove_unused_initializers(nodes, extra_inputs)
         if target_opset < 9:
+            adjusted_extra_inputs = _remove_unused_initializers(nodes, extra_inputs)
             graph = helper.make_graph(nodes, model_name, container.inputs + adjusted_extra_inputs,
                                       container.outputs, adjusted_initializers)
         else:
