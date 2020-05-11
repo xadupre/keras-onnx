@@ -54,6 +54,15 @@ def adjust_input_batch_size(var_type):
     return var_type
 
 
+def adjust_input_output_size(var_type, dim_variable_counter):
+    if len(var_type.shape) > 0:
+        for dim in range(1, len(var_type.shape)):
+            if var_type.shape[dim] is None:
+                dim_variable_counter += 1
+                var_type.shape[dim] = 'M' + str(dim_variable_counter)
+    return dim_variable_counter
+
+
 def _get_layer_name(reserved, ts_or_op):
     return ts_or_op.rsplit('/', 1)[0]
 
@@ -248,7 +257,8 @@ def extract_outputs_from_subclassing_model(model, output_dict, input_names, outp
 
     function = _saving_utils.trace_model_call(model)
     concrete_func = function.get_concrete_function()
-    output_names.extend([ts_.name for ts_ in concrete_func.outputs])
+    for k_, v_ in concrete_func.structured_outputs.items():
+        output_names.extend([ts_.name for ts_ in v_.op.outputs])
     output_dict.update(build_layer_outputs(model, concrete_func.graph, concrete_func.outputs))
     graph_def, converted_input_indices = _convert_to_constants(
         concrete_func, lower_control_flow=True)
