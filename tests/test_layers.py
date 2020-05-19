@@ -718,6 +718,26 @@ def test_stridedslice_shrink_mask_with_version(runner):
         assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
 
+@pytest.mark.skipif(get_maximum_opset_supported() < 10,
+                    reason="dynamic end is not supported for Slice op, opset < 10.")
+def test_stridedslice_dynamic_end(runner):
+    def my_func(x):
+        frame_dim = tf.shape(x)[2]
+        return x[:, :-1, 1:frame_dim - 1, :]
+
+    model = Sequential()
+    filters = 8
+    kernel_size = (2, 5)
+    strides = (1, 2)
+    model.add(Conv2DTranspose(filters, kernel_size, strides=strides, use_bias=False,
+                              padding="valid", name='conv2d_transpose', input_shape=[3, 4, 5]))
+    model.add(Lambda(my_func))
+    data1 = np.random.rand(2 * 3 * 4 * 5).astype(np.float32).reshape(2, 3, 4, 5)
+    expected = model.predict(data1)
+    onnx_model = keras2onnx.convert_keras(model, 'test_strided_slice_dynamic_input')
+    assert runner(onnx_model.graph.name, onnx_model, data1, expected)
+
+
 def test_tf_tile(runner):
     model = Sequential()
     model.add(Lambda(lambda x: tf.tile(x, [1, 1, 3]), input_shape=[2, 2]))
@@ -1285,6 +1305,8 @@ def test_LeakyReLU(advanced_activation_runner):
     advanced_activation_runner(layer, data)
 
 
+@pytest.mark.skipif(get_maximum_opset_supported() < 8,
+                    reason="ThresoldRelu needs ONNX opset 8")
 def test_ThresholdedReLU(advanced_activation_runner):
     data = _asarray(-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5)
     layer = advanced_activations.ThresholdedReLU(theta=1.0, input_shape=(data.size,))
@@ -1640,28 +1662,30 @@ def test_LSTM(runner):
             expected = model.predict(data)
             assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
+
 @pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)),
                     reason="keras LSTM does not have time_major attribute")
 def test_LSTM_time_major_return_seq_true(runner):
     inputs1 = keras.Input(shape=(3, 5))
     data = np.random.rand(1, 3, 5).astype(np.float32)
     # Transpose input to be time major
-    input_transposed = tf.transpose(inputs1, perm=[1,0,2])
+    input_transposed = tf.transpose(inputs1, perm=[1, 0, 2])
     lstm1, state_h, state_c = LSTM(units=2, time_major=True, return_state=True,
                                    return_sequences=True)(input_transposed)
-    lstm1_trans = tf.transpose(lstm1, perm=[1,0,2])
+    lstm1_trans = tf.transpose(lstm1, perm=[1, 0, 2])
     model = keras.Model(inputs=inputs1, outputs=[lstm1_trans, state_h, state_c])
     onnx_model = keras2onnx.convert_keras(model, model.name)
     expected = model.predict(data)
     assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
-@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)) ,
+
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)),
                     reason="keras LSTM does not have time_major attribute")
 def test_LSTM_time_major_return_seq_false(runner):
     inputs1 = keras.Input(shape=(3, 5))
     data = np.random.rand(1, 3, 5).astype(np.float32)
     # Transpose input to be time major
-    input_transposed = tf.transpose(inputs1, perm=[1,0,2])
+    input_transposed = tf.transpose(inputs1, perm=[1, 0, 2])
     lstm1, state_h, state_c = LSTM(units=2, time_major=True, return_state=True,
                                    return_sequences=False)(input_transposed)
     model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
