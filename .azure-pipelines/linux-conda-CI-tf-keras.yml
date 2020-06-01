@@ -32,6 +32,12 @@ jobs:
         TENSORFLOW_PATH: tensorflow-cpu
         INSTALL_ORT:
 
+      Python38:
+        python.version: '3.8'
+        ONNX_PATH: onnx==1.7.0
+        TENSORFLOW_PATH: tensorflow-cpu
+        INSTALL_ORT:
+
     maxParallel: 3
 
   steps:
@@ -65,6 +71,10 @@ jobs:
       python -c "import onnxconverter_common"
       pytest tests --doctest-modules --junitxml=junit/test-results.xml
     displayName: 'pytest'
+
+  - script: |
+      flake8 keras2onnx
+    displayName: 'flake8'
 
   - task: PublishTestResults@2
     inputs:

@@ -217,6 +217,27 @@ def test_tf_bias_add(runner):
     assert runner('onnx_bias_add', onnx_model, data, expected)
 
 
+def test_tf_clip(runner):
+    model = Sequential()
+    model.add(Lambda(lambda x: K.clip(x, 0, 10), input_shape=[5, 5]))
+    data = np.random.randint(-5, 15, size=(1, 5, 5)).astype(np.float32)
+    expected = model.predict(data)
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_clip')
+    assert runner('onnx_tf_clip', onnx_model, data, expected)
+
+
+@pytest.mark.skipif(get_maximum_opset_supported() < 12,
+                    reason="Result mismatch on ORT, skip conversion for unsupported types.")
+def test_tf_pow(runner):
+    model = Sequential()
+    y = tf.constant([[2.0, 2.0], [2.0, 2.0]])
+    model.add(Lambda(lambda x: tf.math.pow(tf.cast(x, tf.int32), tf.cast(y, tf.int32)), input_shape=[2, 2]))
+    data = (100 * np.random.rand(3, 2, 2)).astype(np.float32)
+    expected = model.predict(data)
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_pow')
+    assert runner('onnx_tf_pow', onnx_model, data, expected)
+
+
 def test_tf_concat(runner):
     def my_func_1(x):
         return tf.concat([x[0], x[1]], 1)
@@ -1360,7 +1381,7 @@ def test_Softmax(advanced_activation_runner):
 
 
 def test_tf_nn_activation(runner):
-    for activation in [tf.nn.relu, 'relu']:
+    for activation in [tf.nn.relu, 'relu', tf.nn.relu6]:
         model = keras.Sequential([
             Dense(64, activation=activation, input_shape=[10]),
             Dense(64, activation=activation),
@@ -1847,6 +1868,30 @@ def test_bidirectional_with_bias(runner, rnn_class):
     onnx_model = keras2onnx.convert_keras(model, model.name)
     assert runner(onnx_model.graph.name, onnx_model, x, expected)
 
+@pytest.mark.skipif((is_tensorflow_older_than('2.3.0') or (not is_tf_keras)),
+                     reason=("keras LSTM does not have time_major attribute. There was a bug in tf.keras bidirectional lstm with time_major true which will be fixed in tf-2.3, See - https://github.com/tensorflow/tensorflow/issues/39635"))
+@pytest.mark.parametrize("rnn_class", RNN_CLASSES)
+def test_bidirectional_time_major_true(runner, rnn_class):
+    feature_dim = 1
+    seq_len = 3
+    x = np.ones((1, seq_len, feature_dim), dtype=np.float32)
+
+    for ret_seq in [True, False]:
+        for merge_mode in ['concat', None]:
+            K.clear_session()
+            input = keras.Input(shape=(seq_len, feature_dim))
+            # Transpose input to be time major
+            input_transposed = tf.transpose(input, perm=[1,0,2])
+            output = Bidirectional(rnn_class(1, return_sequences=ret_seq,
+                                             time_major=True),
+                                   name='bi', merge_mode=merge_mode)(input_transposed)
+            if ret_seq and merge_mode == 'concat':
+                output = tf.transpose(output, perm=[1,0,2])
+            model = keras.Model(inputs=input, outputs=output)
+
+            expected = model.predict(x)
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            assert runner(onnx_model.graph.name, onnx_model, x, expected)
 
 @pytest.mark.skip(reason="failure on debian")
 @pytest.mark.parametrize("rnn_class", RNN_CLASSES)
