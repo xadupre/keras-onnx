@@ -11,7 +11,7 @@ from ..common.onnx_ops import apply_identity, apply_tile
 from ..common.onnx_ops import apply_reshape, apply_concat, apply_transpose, apply_flatten, OnnxOperatorBuilder
 
 from .activation import convert_keras_activation
-from .adv_activation import convert_keras_advanced_activation
+from .adv_activation import convert_keras_advanced_activation, convert_keras_softmax
 from .batch_norm import convert_keras_batch_normalization
 from .merge import convert_keras_merge_layer
 from .dense import convert_keras_dense
@@ -207,7 +207,7 @@ keras_layer_to_operator = {
 
 if not is_keras_older_than('2.1.3'):
     keras_layer_to_operator.update({
-        _adv_activations.Softmax: convert_keras_advanced_activation
+        _adv_activations.Softmax: convert_keras_softmax
     })
 
 if not is_keras_older_than('2.2.0'):
@@ -217,6 +217,9 @@ if not is_keras_older_than('2.2.0'):
 
 if is_tf_keras and is_tf2:
     keras_layer_to_operator.update({
+        _layer.recurrent.GRU: convert_keras_gru,
+        _layer.recurrent.LSTM: convert_keras_lstm,
+        _layer.recurrent.SimpleRNN: convert_keras_simple_rnn,
         _layer.recurrent_v2.GRU: convert_keras_gru,
         _layer.recurrent_v2.LSTM: convert_keras_lstm,
         _layer.normalization_v2.BatchNormalization: convert_keras_batch_normalization,

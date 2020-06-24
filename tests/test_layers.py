@@ -155,33 +155,65 @@ def test_tf_argmax_argmin(runner, arg_func):
     assert runner('onnx_arg', onnx_model, data, expected)
 
 
+@pytest.mark.parametrize("arg_func", [[tf.nn.avg_pool, tf.nn.avg_pool3d], [tf.nn.max_pool, tf.nn.max_pool3d]])
+@pytest.mark.parametrize("padding_method", ['SAME', 'VALID'])
+def test_tf_pool(runner, arg_func, padding_method):
+    model = Sequential()
+    k_size = [1, 2, 2, 1] if is_tensorflow_older_than('1.14.0') else 2
+    model.add(Lambda(lambda x: arg_func[0](x, k_size, strides=[1, 1, 2, 1], padding=padding_method, data_format='NHWC'),
+                     input_shape=[10, 12, 3]))
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_pool')
+    data = np.random.rand(5, 10, 12, 3).astype(np.float32)
+    expected = model.predict(data)
+    assert runner('onnx_pool2d', onnx_model, data, expected)
+
+    model = Sequential()
+    strides = [1, 1, 1, 2, 1] if is_tensorflow_older_than('1.14.0') else [1, 1, 2]
+    k_size = [1, 2, 2, 2, 1] if is_tensorflow_older_than('1.14.0') else 2
+    model.add(Lambda(lambda x: arg_func[1](x, k_size, strides=strides, padding=padding_method, data_format='NDHWC'),
+                     input_shape=[10, 12, 3, 4]))
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_pool')
+    data = np.random.rand(5, 10, 12, 3, 4).astype(np.float32)
+    expected = model.predict(data)
+    assert runner('onnx_pool3d', onnx_model, data, expected)
+
+
 def test_tf_conv(runner):
     model = Sequential()
     k = tf.constant(np.random.normal(loc=0.0, scale=1.0, size=(1, 2, 3, 5)).astype(np.float32))
     model.add(Lambda(lambda x: tf.nn.conv2d(x, k, strides=[1, 1, 2, 1], padding='SAME', data_format='NHWC'),
                      input_shape=[10, 14, 3]))
-    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv')
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv2d')
     data = np.random.rand(1, 10, 14, 3).astype(np.float32)
     expected = model.predict(data)
-    assert runner('onnx_tf_conv', onnx_model, data, expected)
+    assert runner('onnx_tf_conv2d', onnx_model, data, expected)
 
     model = Sequential()
     k = tf.constant(np.random.normal(loc=0.0, scale=1.0, size=(1, 2, 3, 5)).astype(np.float32))
     model.add(Lambda(lambda x: tf.nn.conv2d(x, k, strides=[1, 1, 2, 1], padding='VALID', data_format='NHWC'),
                      input_shape=[10, 14, 3]))
-    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv')
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv2d')
     data = np.random.rand(1, 10, 14, 3).astype(np.float32)
     expected = model.predict(data)
-    assert runner('onnx_tf_conv', onnx_model, data, expected)
+    assert runner('onnx_tf_conv2d', onnx_model, data, expected)
 
     model = Sequential()
     k = tf.constant(np.random.normal(loc=0.0, scale=1.0, size=(1, 3, 5)).astype(np.float32))
     model.add(Lambda(lambda x: tf.nn.conv1d(x, k, stride=2, padding='SAME', data_format='NWC'),
                      input_shape=[10, 3]))
-    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv')
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv1d')
     data = np.random.rand(1, 10, 3).astype(np.float32)
     expected = model.predict(data)
-    assert runner('onnx_tf_conv', onnx_model, data, expected)
+    assert runner('onnx_tf_conv1d', onnx_model, data, expected)
+
+    model = Sequential()
+    k = tf.constant(np.random.normal(loc=0.0, scale=1.0, size=(1, 2, 3, 5, 2)).astype(np.float32))
+    model.add(Lambda(lambda x: tf.nn.conv3d(x, k, strides=[1, 1, 2, 1, 1], padding='SAME', data_format='NDHWC'),
+                     input_shape=[10, 14, 3, 5]))
+    onnx_model = keras2onnx.convert_keras(model, 'test_tf_conv3d')
+    data = np.random.rand(1, 10, 14, 3, 5).astype(np.float32)
+    expected = model.predict(data)
+    assert runner('onnx_tf_conv3d', onnx_model, data, expected)
 
 
 def test_tf_rsqrt(runner):
@@ -1380,6 +1412,17 @@ def test_Softmax(advanced_activation_runner):
     advanced_activation_runner(layer, data)
 
 
+@pytest.mark.parametrize("axis", [0, 1, -1])
+def test_Softmax_2(runner, axis):
+    model = keras.Sequential()
+    model.add(keras.layers.InputLayer((2, 3, 4)))
+    model.add(keras.layers.Softmax(axis=axis))
+    data = np.random.rand(2, 2, 3, 4).astype(np.float32)
+    onnx_model = keras2onnx.convert_keras(model, model.name)
+    expected = model.predict(data)
+    assert runner(onnx_model.graph.name, onnx_model, data, expected)
+
+
 @pytest.mark.skipif(is_tensorflow_older_than('1.14.0') and is_tf_keras, reason='old tf version')
 def test_tf_nn_activation(runner):
     for activation in ['relu', tf.nn.relu, tf.nn.relu6, tf.nn.softmax, tf.nn.leaky_relu]:
@@ -1692,6 +1735,16 @@ def test_GRU(runner):
         init_state_onnx = np.array([0.4, 0.5]).astype(np.float32).reshape((1, 2))
         expected = model.predict([data, init_state])
         assert runner(onnx_model.graph.name, onnx_model, [data, init_state_onnx], expected)
+
+
+def test_GRU_2(runner):
+    model = keras.Sequential(name='TestGRU')
+    model.add(keras.layers.GRU(400, reset_after=True, input_shape=(1, 257)))
+    model.add(keras.layers.Dense(257, activation='sigmoid'))
+    onnx_model = keras2onnx.convert_keras(model, name=model.name)
+    data = np.random.rand(3, 257).astype(np.float32).reshape((3, 1, 257))
+    expected = model.predict(data)
+    runner(onnx_model.graph.name, onnx_model, data, expected)
 
 
 def test_LSTM(runner):
@@ -2432,3 +2485,15 @@ def test_sub_model(runner):
     x = np.random.rand(2, 700, 420, 1).astype(np.float32)
     expected = model1.predict(x)
     assert runner(onnx_model.graph.name, onnx_model, x, expected)
+
+
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)), reason='old tf version')
+def test_reverseV2(runner):
+    input = Input(shape=(2, 4), name='input')
+    rev = tf.reverse(input, [1])
+    model = tf.keras.models.Model(inputs=input, outputs=rev)
+
+    onnx_model = keras2onnx.convert_keras(model, 'tf_rev_v2')
+    data = np.random.rand(1, 2, 4).astype(np.float32)
+    expected = model.predict(data)
+    assert runner('tf_rev_v2', onnx_model, data, expected)
