@@ -36,10 +36,10 @@ def convert_tf_identity(scope, operator, container):
 @converter_func(TYPES.AddN)
 def convert_tf_addn(scope, operator, container):
     oopb = OnnxOperatorBuilder(container, scope)
-    oopb.apply_op_with_output("apply_add",
+    oopb.apply_op_with_output("apply_sum",
                               operator.input_full_names,
                               operator.output_full_names,
-                              name=operator.full_name + '_add')
+                              name=operator.full_name + '_sum')
 
 
 def _convert_tf_argmax_argmin_helper(scope, operator, container, arg_str):
@@ -970,6 +970,38 @@ def convert_tf_less_equal(scope, operator, container):
                               name=operator.full_name)
 
 
+@converter_func(TYPES.LinSpace)
+def convert_tf_linspace(scope, operator, container):
+    node = operator.raw_operator
+    oopb = OnnxOperatorBuilder(container, scope)
+    sub_value = oopb.apply_sub([operator.input_full_names[1], operator.input_full_names[0]],
+                               name=operator.full_name + '_sub')
+    sub_1_value = oopb.apply_sub([operator.input_full_names[2],
+                                  ('_minus_one', _to_onnx_type(node.inputs[2].dtype),
+                                   np.array(1, dtype=node.inputs[2].dtype.name))],
+                                 name=operator.full_name + '_sub_1')
+    cast_sub_1 = oopb.apply_cast(sub_1_value,
+                                 to=_to_onnx_type(node.inputs[0].dtype),
+                                 name=operator.full_name + '_sub_1_cast')
+    div_value = oopb.apply_div(sub_value + cast_sub_1,
+                               name=operator.full_name + '_div')
+
+    if _to_onnx_type(node.inputs[1].dtype) in [oopb.float, oopb.double, oopb.float16]:
+        delta_value = 0.0000001
+    else:
+        delta_value = 1
+    add_delta_value = oopb.apply_add([operator.input_full_names[1],
+                                      ('_add_delta', _to_onnx_type(node.inputs[1].dtype),
+                                       np.array(delta_value, dtype=node.inputs[1].dtype.name))],
+                                     name=operator.full_name + '_add_delta')
+
+    oopb.add_node_with_output('Range',
+                              [operator.input_full_names[0]] + add_delta_value + div_value,
+                              operator.output_full_names,
+                              name=operator.full_name,
+                              op_version=11)
+
+
 @converter_func(TYPES.LogicalAnd)
 def convert_tf_logical_and(scope, operator, container):
     oopb = OnnxOperatorBuilder(container, scope)
@@ -1539,7 +1571,12 @@ def _convert_tf_resize(scope, operator, container, mode):
                                operator.inputs[0].full_name + '_transpose',
                                perm=[0, 3, 1, 2])
     attrs = {"mode": mode}
-    attrs['coordinate_transformation_mode'] = 'asymmetric'
+    if operator.target_opset >= 11:
+        if node.get_attr('align_corners'):
+            attrs['coordinate_transformation_mode'] = 'align_corners'
+        else:
+            attrs['coordinate_transformation_mode'] = 'asymmetric'
+
     if attrs['mode'] == 'nearest':
         attrs['nearest_mode'] = 'floor'
     if operator.target_opset < 10:
