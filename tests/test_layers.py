@@ -76,7 +76,7 @@ UpSampling1D = keras.layers.UpSampling1D
 UpSampling2D = keras.layers.UpSampling2D
 UpSampling3D = keras.layers.UpSampling3D
 ZeroPadding2D = keras.layers.ZeroPadding2D
-if not (is_keras_older_than("2.2.4") or is_tf_keras):
+if not is_keras_older_than("2.2.4"):
     ReLU = keras.layers.ReLU
 
 RNN_CLASSES = [SimpleRNN, GRU, LSTM]
@@ -1471,6 +1471,18 @@ def test_PReLU(advanced_activation_runner):
     advanced_activation_runner(layer, data)
 
 
+@pytest.mark.skipif(is_keras_older_than("2.2.4"),
+                    reason="ReLU needs keras 2.2.4+")
+def test_ReLU(advanced_activation_runner):
+    data = _asarray(-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5)
+    layer = ReLU(input_shape=(data.size,))
+    advanced_activation_runner(layer, data)
+    layer = ReLU(max_value=1.5, input_shape=(data.size,))
+    advanced_activation_runner(layer, data)
+    layer = ReLU(max_value=1.5, negative_slope=0.1, input_shape=(data.size,))
+    advanced_activation_runner(layer, data)
+
+
 def test_Softmax(advanced_activation_runner):
     data = _asarray(-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5)
     layer = advanced_activations.Softmax(axis=-1, input_shape=(data.size,))
@@ -1816,7 +1828,8 @@ def test_GRU_2(runner):
     runner(onnx_model.graph.name, onnx_model, data, expected)
 
 
-def test_LSTM(runner):
+@pytest.mark.parametrize('return_sequences', [False, True])
+def test_LSTM(runner, return_sequences):
     inputs1 = keras.Input(shape=(3, 5))
     data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
     for use_bias in [True, False]:
@@ -2155,8 +2168,8 @@ def test_shared_embed(runner):
     # embedding word
     WordEmbedding = Embedding(word_dict_len, word_dim, trainable=False,
                               name="word_embedding_" + h_word_mat)
-    xw_cont = Dropout(0.)(WordEmbedding(contw_input_))  # [bs, c_len, word_dim]
-    xw_ques = Dropout(0.)(WordEmbedding(quesw_input_))  # [bs, c_len, word_dim]
+    xw_cont = Dropout(0.2)(WordEmbedding(contw_input_))  # [bs, c_len, word_dim]
+    xw_ques = Dropout(0.2)(WordEmbedding(quesw_input_))  # [bs, c_len, word_dim]
 
     keras_model = keras.models.Model(inputs=[contw_input_, quesw_input_],
                                      outputs=[xw_cont, xw_ques])

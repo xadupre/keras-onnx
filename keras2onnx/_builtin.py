@@ -25,7 +25,8 @@ from ._tf_utils import (is_nhwc as _is_nhwc,
 
 
 def default_convert(scope, operator, container):
-    apply_identity(scope, operator.inputs[0].full_name, operator.outputs[0].full_name, container)
+    apply_identity(scope, operator.inputs[0].full_name,
+                   operator.outputs[0].full_name, container, operator_name=operator.full_name)
 
 
 @converter_func(TYPES.Identity)
@@ -1765,7 +1766,7 @@ def convert_tf_topkv2(scope, operator, container):
     else:
         k_value = k.item(0)
     oopb.apply_op_with_output('apply_topk',
-                              cast_0,
+                              [cast_0],
                               operator.output_full_names,
                               operator.inputs[0].full_name + '_topk',
                               k=k_value)
