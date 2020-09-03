@@ -1845,6 +1845,19 @@ def test_LSTM(runner, return_sequences):
             expected = model.predict(data)
             assert runner(onnx_model.graph.name, onnx_model, data, expected)
 
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)), reason='old tf version')
+def test_LSTM_rev(runner):
+    inputs1 = keras.Input(shape=(3, 5))
+    data = np.random.rand(3, 5).astype(np.float32).reshape((1, 3, 5))
+    for use_bias in [True, False]:
+        for return_sequences in [True, False]:
+            cls = LSTM(units=2, return_state=True, go_backwards=True, return_sequences=return_sequences, use_bias=use_bias)
+            lstm1, state_h, state_c = cls(inputs1)
+            model = keras.Model(inputs=inputs1, outputs=[lstm1, state_h, state_c])
+            onnx_model = keras2onnx.convert_keras(model, model.name)
+            expected = model.predict(data)
+            assert runner(onnx_model.graph.name, onnx_model, data, expected)
+
 
 @pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)),
                     reason="keras LSTM does not have time_major attribute")
@@ -2581,3 +2594,19 @@ def test_reverseV2(runner):
     data = np.random.rand(1, 2, 4).astype(np.float32)
     expected = model.predict(data)
     assert runner('tf_rev_v2', onnx_model, data, expected)
+
+
+@pytest.mark.skipif(get_maximum_opset_supported() < 11, reason="TensorScatterUpdate is not supported before opset 11.")
+@pytest.mark.skipif((is_tensorflow_older_than('1.14.0') or (not is_tf_keras)), reason='old tf version')
+def test_tensor_scatter_update(runner):
+    indices = np.array([[0],[0]]).astype(np.int64)
+    updates = np.array([[[1, 1], [1, 1]], [[1, 1], [1, 1]]]).astype(np.float32)
+    tensor = Input(shape=(2,2), name='tensor')
+
+    out = tf.tensor_scatter_nd_update(tensor, indices, updates)
+    model = tf.keras.models.Model(inputs=tensor, outputs=out)
+    onnx_model = keras2onnx.convert_keras(model, model.name)
+
+    tensor_data = np.array([[[6, 5], [6, 6]], [[5, 5], [6, 6]]]).astype(np.float32)
+    expected = model.predict(tensor_data)
+    assert runner(onnx_model.graph.name, onnx_model, tensor_data, expected)

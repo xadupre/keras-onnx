@@ -13,7 +13,7 @@ from keras2onnx.proto import keras, is_keras_older_than
 from os.path import dirname, abspath
 
 sys.path.insert(0, os.path.join(dirname(abspath(__file__)), '../../tests/'))
-from test_utils import run_image, run_onnx_runtime, test_level_0
+from test_utils import run_image, test_level_0, run_keras_and_ort
 img_path = os.path.join(os.path.dirname(__file__), '../data', 'street.jpg')
 
 Activation = keras.layers.Activation
@@ -33,7 +33,7 @@ Flatten = keras.layers.Flatten
 GlobalAveragePooling1D = keras.layers.GlobalAveragePooling1D
 Input = keras.layers.Input
 LeakyReLU = keras.layers.LeakyReLU
-LSTM = keras.layers.LSTM
+MaxPool2D = keras.layers.MaxPool2D
 MaxPooling2D = keras.layers.MaxPooling2D
 multiply = keras.layers.multiply
 Permute = keras.layers.Permute
@@ -126,7 +126,7 @@ class TestKerasApplications(unittest.TestCase):
         onnx_model = keras2onnx.convert_keras(model, model.name)
         data = np.random.rand(N, H, W, C).astype(np.float32).reshape((N, H, W, C))
         expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
+        self.assertTrue(run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
 
     # model from https://github.com/titu1994/Image-Super-Resolution
     def test_ExpantionSuperResolution(self):
@@ -154,7 +154,7 @@ class TestKerasApplications(unittest.TestCase):
             onnx_model = keras2onnx.convert_keras(model, model.name)
             data = np.random.rand(actual_batch_size, timesteps, input_dim).astype(np.float32).reshape((actual_batch_size, timesteps, input_dim))
             expected = model.predict(data)
-            self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
+            self.assertTrue(run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
 
     # model from https://github.com/titu1994/LSTM-FCN
     @unittest.skipIf(test_level_0,
@@ -192,7 +192,7 @@ class TestKerasApplications(unittest.TestCase):
         batch_size = 2
         data = np.random.rand(batch_size, 1, MAX_SEQUENCE_LENGTH).astype(np.float32).reshape(batch_size, 1, MAX_SEQUENCE_LENGTH)
         expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
+        self.assertTrue(run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
 
     # model from https://github.com/CyberZHG/keras-self-attention
     @unittest.skipIf(test_level_0 or get_maximum_opset_supported() < 11,
@@ -212,8 +212,183 @@ class TestKerasApplications(unittest.TestCase):
         onnx_model = keras2onnx.convert_keras(model, model.name)
         data = np.random.rand(5, 10).astype(np.float32).reshape(5, 10)
         expected = model.predict(data)
-        self.assertTrue(run_onnx_runtime(onnx_model.graph.name, onnx_model, data, expected, self.model_files))
+        self.assertTrue(run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
 
+    # Model from https://github.com/chandrikadeb7/Face-Mask-Detection
+    @unittest.skipIf(test_level_0 or is_keras_older_than("2.2.3"),
+                     "There is no mobilenet_v2 module before keras 2.2.3.")
+    def test_FaceMaskDetection(self):
+        mobilenet_v2 = keras.applications.mobilenet_v2
+        baseModel = mobilenet_v2.MobileNetV2(weights=None, include_top=False,
+            input_tensor=Input(shape=(224, 224, 3)))
+        headModel = baseModel.output
+        headModel = AveragePooling2D(pool_size=(7, 7))(headModel)
+        headModel = Flatten(name="flatten")(headModel)
+        headModel = Dense(128, activation="relu")(headModel)
+        headModel = Dropout(0.5)(headModel)
+        headModel = Dense(2, activation="softmax")(headModel)
+
+        model = Model(inputs=baseModel.input, outputs=headModel)
+        res = run_image(model, self.model_files, img_path)
+        self.assertTrue(*res)
+
+    # Model from https://github.com/abhishekrana/DeepFashion
+    @unittest.skipIf(test_level_0,
+                     "Test level 0 only.")
+    def test_DeepFashion(self):
+        base_model = keras.applications.VGG16(weights=None, include_top=False, input_shape=(224, 224, 3))
+        model_inputs = base_model.input
+        common_inputs = base_model.output
+        dropout_rate = 0.5
+        output_classes = 20
+        x = Flatten()(common_inputs)
+        x = Dense(256, activation='tanh')(x)
+        x = Dropout(dropout_rate)(x)
+        predictions_class = Dense(output_classes, activation='softmax', name='predictions_class')(x)
+
+        ## Model (Regression) IOU score
+        x = Flatten()(common_inputs)
+        x = Dense(256, activation='tanh')(x)
+        x = Dropout(dropout_rate)(x)
+        x = Dense(256, activation='tanh')(x)
+        x = Dropout(dropout_rate)(x)
+        predictions_iou = Dense(1, activation='sigmoid', name='predictions_iou')(x)
+
+        ## Create Model
+        keras_model = Model(inputs=model_inputs, outputs=[predictions_class, predictions_iou])
+        res = run_image(keras_model, self.model_files, img_path, atol=5e-3, target_size=224, compare_perf=True)
+        self.assertTrue(*res)
+
+    # Model from https://github.com/manicman1999/Keras-BiGAN
+    @unittest.skipIf(test_level_0,
+                     "Test level 0 only.")
+    def test_bigan_generator(self):
+        def g_block(inp, fil, u=True):
+
+            if u:
+                out = UpSampling2D(interpolation='bilinear')(inp)
+            else:
+                out = Activation('linear')(inp)
+
+            skip = Conv2D(fil, 1, padding='same', kernel_initializer='he_normal')(out)
+
+            out = Conv2D(filters=fil, kernel_size=3, padding='same', kernel_initializer='he_normal')(out)
+            out = LeakyReLU(0.2)(out)
+
+            out = Conv2D(filters=fil, kernel_size=3, padding='same', kernel_initializer='he_normal')(out)
+            out = LeakyReLU(0.2)(out)
+
+            out = Conv2D(fil, 1, padding='same', kernel_initializer='he_normal')(out)
+
+            out = keras.layers.add([out, skip])
+            out = LeakyReLU(0.2)(out)
+
+            return out
+
+        latent_size = 64
+        cha = 16
+
+        inp = Input(shape = [latent_size])
+
+        x = Dense(4*4*16*cha, kernel_initializer = 'he_normal')(inp)
+        x = Reshape([4, 4, 16*cha])(x)
+
+        x = g_block(x, 16 * cha, u = False)  #4
+        x = g_block(x, 8 * cha)  #8
+        x = g_block(x, 4 * cha)  #16
+        x = g_block(x, 3 * cha)   #32
+        x = g_block(x, 2 * cha)   #64
+        x = g_block(x, 1 * cha)   #128
+
+        x = Conv2D(filters = 3, kernel_size = 1, activation = 'sigmoid', padding = 'same', kernel_initializer = 'he_normal')(x)
+
+        model = Model(inputs = inp, outputs = x)
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        data = np.random.rand(200, latent_size).astype(np.float32).reshape(200, latent_size)
+        expected = model.predict(data)
+        self.assertTrue(
+            run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
+
+    # Model from https://github.com/ankur219/ECG-Arrhythmia-classification
+    @unittest.skipIf(test_level_0,
+                     "Test level 0 only.")
+    def test_ecg_classification(self):
+        model = Sequential()
+        model.add(Conv2D(64, (3, 3), strides=(1, 1), input_shape=[128, 128, 3], kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(Conv2D(64, (3, 3), strides=(1, 1), kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Conv2D(128, (3, 3), strides=(1, 1), kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(Conv2D(128, (3, 3), strides=(1, 1), kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Conv2D(256, (3, 3), strides=(1, 1), kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(Conv2D(256, (3, 3), strides=(1, 1), kernel_initializer='glorot_uniform'))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(MaxPool2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Flatten())
+        model.add(Dense(2048))
+        model.add(keras.layers.ELU())
+        model.add(BatchNormalization())
+        model.add(Dropout(0.5))
+        model.add(Dense(7, activation='softmax'))
+        onnx_model = keras2onnx.convert_keras(model, model.name)
+        data = np.random.rand(2, 128, 128, 3).astype(np.float32)
+        expected = model.predict(data)
+        self.assertTrue(
+            run_keras_and_ort(onnx_model.graph.name, onnx_model, model, data, expected, self.model_files))
+
+    # Model from https://github.com/arunponnusamy/gender-detection-keras
+    @unittest.skipIf(test_level_0,
+                     "Test level 0 only.")
+    def test_gender_detection(self):
+        model = Sequential()
+        inputShape = (224, 224, 3)
+        chanDim = -1
+        model.add(Conv2D(32, (3,3), padding="same", input_shape=inputShape))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization(axis=chanDim))
+        model.add(MaxPooling2D(pool_size=(3,3)))
+        model.add(Dropout(0.25))
+
+        model.add(Conv2D(64, (3,3), padding="same"))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization(axis=chanDim))
+        model.add(Conv2D(64, (3,3), padding="same"))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization(axis=chanDim))
+        model.add(MaxPooling2D(pool_size=(2,2)))
+        model.add(Dropout(0.25))
+
+        model.add(Conv2D(128, (3,3), padding="same"))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization(axis=chanDim))
+        model.add(Conv2D(128, (3,3), padding="same"))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization(axis=chanDim))
+        model.add(MaxPooling2D(pool_size=(2,2)))
+        model.add(Dropout(0.25))
+
+        model.add(Flatten())
+        model.add(Dense(1024))
+        model.add(Activation("relu"))
+        model.add(BatchNormalization())
+        model.add(Dropout(0.5))
+
+        model.add(Dense(80))
+        model.add(Activation("sigmoid"))
+
+        res = run_image(model, self.model_files, img_path, atol=5e-3, target_size=224)
+        self.assertTrue(*res)
 
 if __name__ == "__main__":
     unittest.main()
