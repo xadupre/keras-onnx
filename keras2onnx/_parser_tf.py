@@ -144,7 +144,7 @@ class LayerInfo(object):
 
 
 def is_subclassing(model):
-    subclassed = not (model._is_graph_network or  # pylint:disable=protected-access
+    subclassed = not (getattr(model, '_is_graph_network', False) or  # pylint:disable=protected-access
                       isinstance(model, keras.engine.sequential.Sequential))
     if subclassed:
         return True
