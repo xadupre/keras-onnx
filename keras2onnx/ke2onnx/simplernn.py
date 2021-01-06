@@ -7,7 +7,6 @@ import numpy as np
 from ..proto import onnx_proto, keras
 from ..common import name_func
 from ..common.onnx_ops import (
-    apply_cast,
     apply_concat,
     apply_reshape,
     apply_slice,
@@ -159,13 +158,14 @@ def build_sequence_lengths(scope, operator, container):
     if len(operator.input_masks) != 1:
         return ''
 
+    oopb = OnnxOperatorBuilder(container, scope)
     input_mask_name = operator.input_masks[0].full_name
-    mask_cast = scope.get_unique_operator_name(operator.full_name + '_mask_cast')
-    sequence_lengths = scope.get_unique_operator_name(operator.full_name + '_seq_lens')
-
-    apply_cast(scope, input_mask_name, mask_cast, container, to=TensorProto.INT32)
-    container.add_node('ReduceSum', mask_cast, sequence_lengths, keepdims=False, axes=[-1])
-    return sequence_lengths
+    mask_cast = oopb.apply_cast(input_mask_name,
+                                to=oopb.int32,
+                                name=operator.full_name + 'cast')
+    sequence_lengths = oopb.apply_reducesum(mask_cast, name=operator.full_name + '_reduced', axes=[-1],
+                                            keepdims=False)
+    return sequence_lengths[0]
 
 
 def build_initial_states(scope, operator, container, bidirectional=False):
@@ -391,14 +391,14 @@ def build_output_states(scope, operator, container, output_names, bidirectional=
             apply_split(scope, rnn_h, split_names, container)
 
             for split_name, output_name in zip(split_names, output_names):
-                apply_squeeze(scope, split_name, output_name, container)
+                apply_squeeze(scope, split_name, output_name, container, axes=[0])
 
     else:
         output_state = op.return_state
 
         if output_state:
             output_h = operator.outputs[1].full_name
-            apply_squeeze(scope, rnn_h, output_h, container)
+            apply_squeeze(scope, rnn_h, output_h, container, axes=[0])
 
 
 def is_time_major(op, bidirectional):
