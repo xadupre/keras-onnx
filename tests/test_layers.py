@@ -1,11 +1,5 @@
-###############################################################################
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License. See License.txt in the project root for
-# license information.
-###############################################################################
-import os
-import unittest
-from distutils.version import StrictVersion
+# SPDX-License-Identifier: Apache-2.0
+
 import pytest
 import keras2onnx
 import numpy as np
